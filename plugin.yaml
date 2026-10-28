@@ -1,0 +1,12 @@
+id: discord
+name: Discord
+version: "1.0.0"
+hubra: ">=0.1,<1"
+description: "Announce new events, posts and polls in a Discord channel through a webhook, with an optional mention."
+author: Hubra
+homepage: https://github.com/hubra-app/hubra
+tags: [communication]
+package: hubra_discord
+modules: [discord]
+requires: [members]
+frontend: frontend/dist/plugin.js
