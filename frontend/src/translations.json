@@ -1,0 +1,18 @@
+{
+  "en-GB": {
+    "settings": {
+      "modules": {
+        "discordTest": "Send test message",
+        "discordTestSent": "Test message sent"
+      }
+    }
+  },
+  "de-CH": {
+    "settings": {
+      "modules": {
+        "discordTest": "Testnachricht schicke",
+        "discordTestSent": "Testnachricht gschickt"
+      }
+    }
+  }
+}
