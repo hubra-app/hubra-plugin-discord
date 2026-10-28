@@ -1,0 +1,33 @@
+Hubra
+Copyright (c) 2026 Mike Keller. All rights reserved.
+
+This repository is published so that its source code can be read. It is not
+open source, and no licence to use it is granted except as written below.
+
+1. Viewing. You may view and read the source code on GitHub, and GitHub may
+   show and fork it as its Terms of Service require. A fork does not give you
+   any further right.
+
+2. Everything else needs written permission. Without the copyright holder's
+   prior written permission you may not:
+     a) install, run, host or self-host the software, or any part of it, for
+        any purpose, including evaluation, testing and non-commercial use;
+     b) offer it, or anything built from it, to others as a service;
+     c) copy, modify, merge, translate or create derivative works of it,
+        except the copy GitHub makes when you view or fork it;
+     d) distribute, publish, sublicense, sell or otherwise make it available,
+        in source or binary form, including container images built from it.
+
+3. Permission. To ask for permission, open an issue in this repository or
+   contact the copyright holder. Permission is valid only in writing, for the
+   scope it names, and may come with its own terms.
+
+4. Third-party components. Files and dependencies that come from third
+   parties remain under their own licences. Nothing here restricts what
+   those licences allow.
+
+5. No warranty. The software is provided "as is", without warranty of any
+   kind, express or implied. The copyright holder is not liable for any claim,
+   damage or other liability arising from the software or its use.
+
+6. Law. This notice is governed by Swiss law.
