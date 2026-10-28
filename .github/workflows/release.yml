@@ -21,8 +21,9 @@ name: Test and release
 #   release  contents: write, no signing key: attaches the zip
 #
 # Secrets:
-#   HUBRA_SIGNING_KEY   in the environment "plugin-signing" (an organisation
-#                       secret limited to it works too): the private key (PEM)
+#   HUBRA_SIGNING_KEY   an environment secret of "plugin-signing" in this
+#                       repository (not an organisation or repository secret,
+#                       which every job could read): the private key (PEM)
 #                       of Hubra.pub. Add yourself as required reviewer of the
 #                       environment, so every signing run waits for a click.
 #   HUBRA_READ_TOKEN    only while hubra-app/hubra is private: a token that can
