@@ -1,20 +1,34 @@
 name: Test and release
 
-# Every push and pull request runs the plugin's tests and type check against Hubra.
+# Every push and pull request runs the plugin's tests and type check against
+# Hubra's main.
 #
-# Publish a release whose tag matches plugin.yaml (v1.3.0 for version 1.3.0), in the
-# web UI or with `gh release create v1.3.0 --target main --notes ""`. The workflow runs
-# the plugin's tests against Hubra, builds its frontend, signs exactly what is committed
-# with the HUBRA_SIGNING_KEY secret (the Hubra project key for official plugins) and
-# attaches <id>-<version>.zip to the release. Files listed in .releaseignore stay out of
-# the zip. The release description gets that version's CHANGELOG.md section (below
-# anything you wrote). The Marketplace (hubra-app/hubra-plugins) picks the release up.
+# Publish a release whose tag matches plugin.yaml (v1.3.0 for version 1.3.0),
+# in the web UI or with `gh release create v1.3.0 --target main --notes ""`,
+# and the plugin is signed and attached to it as <id>-<version>.zip. Files
+# listed in .releaseignore stay out of the zip. The release description gets
+# that version's CHANGELOG.md section (below anything you wrote). The
+# Marketplace (hubra-app/hubra-plugins) picks the release up.
 #
-# Secrets (organisation or repository):
-#   HUBRA_SIGNING_KEY   the private key (PEM) that signs the plugin
-#   HUBRA_READ_TOKEN    only while hubra-app/hubra is private: a token that can read it
-#   MARKETPLACE_TOKEN   optional: Actions write on the Marketplace repository, so it
-#                       publishes right away instead of on its next hourly run
+# The signing key is the most sensitive secret here: anything it signs
+# installs as "official" on every Hubra server. So only the sign job sees it,
+# in the GitHub environment "plugin-signing", and that job runs no npm and no
+# third-party action, only the plugin from git, Hubra's backend and its
+# locked Python packages. From the jobs before it, it takes just the built
+# frontend (frontend/dist).
+#   test     no signing key: tests, type check, and on a release the frontend build
+#   sign     environment "plugin-signing": signs and packs
+#   release  contents: write, no signing key: attaches the zip
+#
+# Secrets:
+#   HUBRA_SIGNING_KEY   in the environment "plugin-signing" (an organisation
+#                       secret limited to it works too): the private key (PEM)
+#                       of Hubra.pub. Add yourself as required reviewer of the
+#                       environment, so every signing run waits for a click.
+#   HUBRA_READ_TOKEN    only while hubra-app/hubra is private: a token that can
+#                       read it (Contents: read)
+#   MARKETPLACE_TOKEN   optional: Actions write on the Marketplace repository,
+#                       so it publishes right away instead of within the hour
 on:
   release:
     types: [published]
@@ -23,16 +37,20 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-24.04
+    outputs:
+      id: ${{ steps.manifest.outputs.id }}
+      version: ${{ steps.manifest.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: plugin
       - name: Check the tag against plugin.yaml
+        id: manifest
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
@@ -44,22 +62,23 @@ jobs:
           tag = os.environ["TAG"]
           if tag and tag != f"v{ver}":
               raise SystemExit(f"::error::tag {tag}, but plugin.yaml says version {ver}")
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"ID={pid}\nVER={ver}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"id={pid}\nversion={ver}\n")
           PY
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: hubra-app/hubra
           path: hubra
           token: ${{ secrets.HUBRA_READ_TOKEN || github.token }}
-      - uses: actions/setup-python@v5
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: hubra/app/backend/requirements.lock
       - run: pip install --no-deps -r hubra/app/backend/requirements.lock
       - run: pip install pytest pytest-flask
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -69,38 +88,117 @@ jobs:
 
       - name: Test against Hubra
         working-directory: hubra/app/backend
+        env:
+          ID: ${{ steps.manifest.outputs.id }}
         run: |
           rm -rf "../../plugins/$ID" && cp -r "$GITHUB_WORKSPACE/plugin" "../../plugins/$ID"
           (cd ../frontend && npm run typecheck:plugins)
           if [ -d "../../plugins/$ID/tests" ]; then pytest -q "../../plugins/$ID"; fi
 
-      - name: Sign and pack
+      - name: Build the frontend
         if: github.event_name == 'release'
+        working-directory: hubra/app/frontend
+        env:
+          ID: ${{ steps.manifest.outputs.id }}
+        run: npm run build:plugin -- "../../plugins/$ID"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'release'
+        with:
+          name: frontend
+          path: hubra/plugins/${{ steps.manifest.outputs.id }}/frontend/dist/
+          if-no-files-found: ignore
+          retention-days: 1
+
+  sign:
+    needs: test
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    environment: plugin-signing
+    steps:
+      # The plugin straight from git, Hubra's backend and nothing npm touched
+      # but the built frontend.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: hubra-app/hubra
+          path: hubra
+          sparse-checkout: app/backend
+          token: ${{ secrets.HUBRA_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: frontend
+          path: ${{ runner.temp }}/frontend
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - run: pip install --no-deps -r hubra/app/backend/requirements.lock
+
+      - name: Sign and pack
         working-directory: hubra/app/backend
         env:
           FLASK_APP: "hubra:create_app()"
           SIGNING_KEY: ${{ secrets.HUBRA_SIGNING_KEY }}
+          SIGNER: ${{ vars.HUBRA_SIGNER || 'Hubra' }}
+          ID: ${{ needs.test.outputs.id }}
+          VER: ${{ needs.test.outputs.version }}
         run: |
-          if [ -z "$SIGNING_KEY" ]; then echo "::error::add the HUBRA_SIGNING_KEY secret"; exit 1; fi
+          if [ -z "$SIGNING_KEY" ]; then echo "::error::add HUBRA_SIGNING_KEY to the plugin-signing environment"; exit 1; fi
           out="$GITHUB_WORKSPACE/build/$ID"
           mkdir -p "$out" && git -C "$GITHUB_WORKSPACE/plugin" archive HEAD | tar -x -C "$out"  # what's committed
-          (cd ../frontend && npm run build:plugin -- "$out")
+          if [ -d "$RUNNER_TEMP/frontend" ]; then
+            rm -rf "$out/frontend/dist" && mkdir -p "$out/frontend" && cp -R "$RUNNER_TEMP/frontend" "$out/frontend/dist"
+          fi
           flask plugins prune "$out"  # minus what .releaseignore lists
           key="$RUNNER_TEMP/key.pem"
+          trap 'rm -f "$key"' EXIT
           (umask 077 && printf '%s\n' "$SIGNING_KEY" > "$key")
-          flask plugins sign "$out" --key "$key" --signer "${{ vars.HUBRA_SIGNER || 'Hubra' }}"
-          rm -f "$key"
+          # Refuse to sign with any key but the official one.
+          python - "$key" <<'PY'
+          import sys
+          from cryptography.hazmat.primitives import serialization
+          from hubra.core.plugins.trust import OFFICIAL_DIR, key_id, load_public
+          pub = serialization.load_pem_private_key(open(sys.argv[1], "rb").read(), None).public_key()
+          official = load_public((OFFICIAL_DIR / "Hubra.pub").read_text())
+          if key_id(pub) != key_id(official):
+              sys.exit(f"HUBRA_SIGNING_KEY is {key_id(pub)}, not the official key {key_id(official)}")
+          PY
+          flask plugins sign "$out" --key "$key" --signer "$SIGNER"
           flask plugins pack "$out" -o "$GITHUB_WORKSPACE/$ID-$VER.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed
+          path: ${{ needs.test.outputs.id }}-${{ needs.test.outputs.version }}.zip
+          retention-days: 1
 
+  release:
+    needs: [test, sign]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      ID: ${{ needs.test.outputs.id }}
+      VER: ${{ needs.test.outputs.version }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: signed
       - name: Release notes from CHANGELOG.md
-        if: github.event_name == 'release'
         env:
           BODY: ${{ github.event.release.body }}
         run: |
           python3 - <<'PY'
           import os, re
           v = os.environ["VER"]
-          log = open("plugin/CHANGELOG.md").read() if os.path.exists("plugin/CHANGELOG.md") else ""
+          log = open("CHANGELOG.md").read() if os.path.exists("CHANGELOG.md") else ""
           m = re.search(rf"^##+\s*\[?v?{re.escape(v)}\]?\b[^\n]*\n(.*?)(?=^##+\s|\Z)", log, re.M | re.S)
           section = m.group(1).strip() if m else ""
           body = os.environ.get("BODY", "").strip()
@@ -109,20 +207,16 @@ jobs:
               parts.append(f"## Changes in {v}\n\n{section}" if body else section)
           open("notes.md", "w").write("\n\n".join(parts) or f"{os.environ['ID']} {v}")
           PY
-
       - name: Attach the signed plugin to the release
-        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           gh release upload "$TAG" "$ID-$VER.zip" --clobber --repo "$GITHUB_REPOSITORY"
           gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
-
       - name: Tell the Marketplace
-        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
+          MARKETPLACE: ${{ vars.MARKETPLACE_REPO || 'hubra-app/hubra-plugins' }}
         run: |
-          if [ -z "$GH_TOKEN" ]; then echo "No MARKETPLACE_TOKEN: the Marketplace picks it up on its next hourly run."; exit 0; fi
-          gh api "repos/${{ vars.MARKETPLACE_REPO || 'hubra-app/hubra-plugins' }}/dispatches" -f event_type=plugin-released
+          if [ -z "$GH_TOKEN" ]; then echo "No MARKETPLACE_TOKEN: the Marketplace picks it up within the hour."; exit 0; fi
+          gh api "repos/$MARKETPLACE/dispatches" -f event_type=plugin-released
