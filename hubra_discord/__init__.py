@@ -20,7 +20,6 @@ module = Module(
             "hubra_discord.routes",
             "discord_bp",
             "/api/v1/discord",
-            v2=(("/api/v2/tenants/discord", "discord_bp_v2"),),
         ),
     ),
     settings=(
