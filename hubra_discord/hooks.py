@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import event as sa_event
+
 from hubra.core.extensions import db
 from hubra.core.modules import get_config
 
@@ -27,9 +29,37 @@ def _queue(tenant_id, setting: str, item_embed: dict) -> None:
     if not is_webhook_url(url):
         _log.warning("discord: webhook_url is missing or not a Discord webhook")
         return
+    _after_commit(url, payload(config.get("mention") or None, [item_embed]))
+
+
+def _after_commit(url: str, body: dict) -> None:
+    """Send once the request's transaction is committed, so a change that is
+    rolled back afterwards is never announced."""
+    session = db.session()
+    if not session.info.get("discord_listening"):
+        sa_event.listen(session, "after_commit", _send_pending)
+        sa_event.listen(session, "after_soft_rollback", _drop_pending)
+        session.info["discord_listening"] = True
+    session.info.setdefault("discord_pending", []).append((url, body))
+
+
+def _send_pending(session) -> None:
+    pending = session.info.pop("discord_pending", None)
+    if not pending:
+        return
     from .tasks import post_to_discord
 
-    post_to_discord.delay(url, payload(config.get("mention") or None, [item_embed]))
+    for url, body in pending:
+        try:
+            post_to_discord.delay(url, body)
+        except Exception:
+            # The commit is done; a broker outage must not turn it into a 500.
+            _log.exception("discord: could not queue the announcement")
+
+
+def _drop_pending(session, previous_transaction) -> None:
+    if not previous_transaction.nested:  # a savepoint leaves the rest alive
+        session.info.pop("discord_pending", None)
 
 
 def on_event_published(tenant_id=None, event_id=None, **_):
