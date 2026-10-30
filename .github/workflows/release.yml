@@ -7,7 +7,8 @@ name: Test and release
 # in the web UI or with `gh release create v1.3.0 --target main --notes ""`,
 # and the plugin is signed and attached to it as <id>-<version>.zip. Files
 # listed in .releaseignore stay out of the zip. The release description gets
-# that version's CHANGELOG.md section (below anything you wrote). The
+# that version's CHANGELOG.md section (below anything you wrote) and the
+# zip's SHA-256, which is also attached as <id>-<version>.zip.sha256. The
 # Marketplace (hubra-app/hubra-plugins) picks the release up.
 #
 # The signing key is the most sensitive secret here: anything it signs
@@ -208,11 +209,15 @@ jobs:
               parts.append(f"## Changes in {v}\n\n{section}" if body else section)
           open("notes.md", "w").write("\n\n".join(parts) or f"{os.environ['ID']} {v}")
           PY
+      - name: Checksum
+        run: |
+          sha256sum "$ID-$VER.zip" > "$ID-$VER.zip.sha256"
+          printf '\n\nSHA-256 of `%s`: `%s`\n' "$ID-$VER.zip" "$(cut -d' ' -f1 "$ID-$VER.zip.sha256")" >> notes.md
       - name: Attach the signed plugin to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$TAG" "$ID-$VER.zip" --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" "$ID-$VER.zip" "$ID-$VER.zip.sha256" --clobber --repo "$GITHUB_REPOSITORY"
           gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
       - name: Tell the Marketplace
         env:
