@@ -1,5 +1,7 @@
 # Discord
 
+[![Test and release](https://github.com/hubra-app/hubra-plugin-discord/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/hubra-app/hubra-plugin-discord/actions/workflows/release.yml?query=branch%3Amain) [![License: all rights reserved](https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey)](LICENSE)
+
 A plugin for [Hubra](https://hubra.club). Announce new events, posts and polls in a Discord channel through a webhook, with an optional mention.
 
 **Version** 1.0.0 · **Works with** Hubra >=0.1,<1 · **Plugin id** `discord`
