@@ -1,18 +1,48 @@
 {
   "en-GB": {
-    "settings": {
-      "modules": {
-        "discordTest": "Send test message",
-        "discordTestSent": "Test message sent"
-      }
+    "discord": {
+      "saved": "Saved",
+      "saveFailed": "Saving failed",
+      "announcements": "Announcements",
+      "channel": "Channel",
+      "pickChannel": "Pick a channel",
+      "events": "New events",
+      "posts": "New posts",
+      "polls": "New polls",
+      "membersOnly": "Members-only events too",
+      "membersOnlyHint": "Only switch on if only members can see the channel. Posts show with their title and summary only.",
+      "mention": "Mention",
+      "mentionNone": "Nobody",
+      "roles": "Roles",
+      "rolesHint": "Members who linked their Discord account get the role as long as they belong. The bot can only give roles below its own.",
+      "source": "Who",
+      "role": "Discord role",
+      "remove": "Remove",
+      "notAssignable": "The bot can't give this role: {{roles}}",
+      "addRole": "Map a role"
     }
   },
   "de-CH": {
-    "settings": {
-      "modules": {
-        "discordTest": "Testnachricht schicke",
-        "discordTestSent": "Testnachricht gschickt"
-      }
+    "discord": {
+      "saved": "Gespeichert",
+      "saveFailed": "Speichern fehlgeschlagen",
+      "announcements": "Ankündigungen",
+      "channel": "Kanal",
+      "pickChannel": "Kanal wählen",
+      "events": "Neue Anlässe",
+      "posts": "Neue Beiträge",
+      "polls": "Neue Umfragen",
+      "membersOnly": "Auch Anlässe nur für Mitglieder",
+      "membersOnlyHint": "Nur einschalten, wenn den Kanal nur Mitglieder sehen. Beiträge erscheinen nur mit Titel und Kurztext.",
+      "mention": "Erwähnen",
+      "mentionNone": "Niemanden",
+      "roles": "Rollen",
+      "rolesHint": "Mitglieder, die ihr Discord-Konto verknüpft haben, bekommen die Rolle, solange sie dazugehören. Der Bot kann nur Rollen unterhalb seiner eigenen vergeben.",
+      "source": "Wer",
+      "role": "Discord-Rolle",
+      "remove": "Entfernen",
+      "notAssignable": "Der Bot kann diese Rolle nicht vergeben: {{roles}}",
+      "addRole": "Rolle zuordnen"
     }
   }
 }
