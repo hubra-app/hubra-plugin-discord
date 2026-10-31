@@ -16,8 +16,7 @@ the Hubra project key). Clubs then switch it on under Einstellungen → Module
 & Plugins and connect their server under Einstellungen → Verbundene Apps.
 
 The bot is one Discord application for the whole platform; its keys are
-platform settings (`DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`,
-`DISCORD_BOT_TOKEN`, `DISCORD_PUBLIC_KEY`). Setup steps are in Hubra's
+platform settings (manage › Platform settings › Discord), stored encrypted. Setup steps are in Hubra's
 `docs/discord.md`. The bot asks only for View Channels, Send Messages, Embed
 Links and (with roles) Manage Roles, never Administrator.
 

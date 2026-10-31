@@ -28,7 +28,7 @@ MAX_AGE = 300
 
 
 def verified(body: bytes, signature: str, timestamp: str) -> bool:
-    key = api.config("DISCORD_PUBLIC_KEY")
+    key = api.config("public_key")
     if not key or not signature or not timestamp:
         return False
     try:

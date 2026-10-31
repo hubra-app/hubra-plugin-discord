@@ -51,7 +51,7 @@ class DiscordApp:
     def authorize_url(self, state, redirect_uri, scopes):
         query = urllib.parse.urlencode(
             {
-                "client_id": api.config("DISCORD_CLIENT_ID"),
+                "client_id": api.config("client_id"),
                 "scope": "bot applications.commands",
                 "permissions": str(_permissions(scopes)),
                 "response_type": "code",
@@ -74,8 +74,8 @@ class DiscordApp:
             token = api.form(
                 "/oauth2/token",
                 {
-                    "client_id": api.config("DISCORD_CLIENT_ID"),
-                    "client_secret": api.config("DISCORD_CLIENT_SECRET"),
+                    "client_id": api.config("client_id"),
+                    "client_secret": api.config("client_secret"),
                     "grant_type": "authorization_code",
                     "code": code,
                     "redirect_uri": redirect_uri,
@@ -103,8 +103,8 @@ class DiscordApp:
             api.form(
                 "/oauth2/token/revoke",
                 {
-                    "client_id": api.config("DISCORD_CLIENT_ID"),
-                    "client_secret": api.config("DISCORD_CLIENT_SECRET"),
+                    "client_id": api.config("client_id"),
+                    "client_secret": api.config("client_secret"),
                     "token": access,
                     "token_type_hint": "access_token",
                 },

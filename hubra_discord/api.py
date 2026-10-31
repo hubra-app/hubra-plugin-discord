@@ -1,7 +1,7 @@
 """Discord's REST API, as the Hubra bot and for the add-to-server sign-in.
 
-The bot token is the platform's (``DISCORD_BOT_TOKEN``); no club ever holds
-one. Every call names the server it acts on, and callers only pass the
+The bot token is the platform's (manage › Platform settings › Discord); no
+club ever holds one. Every call names the server it acts on, and callers only pass the
 server of a connection the club confirmed.
 """
 
@@ -14,8 +14,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
-
-from flask import current_app
 
 _log = logging.getLogger(__name__)
 
@@ -45,15 +43,15 @@ class DiscordError(Exception):
 
 
 def config(key: str) -> str:
-    return current_app.config.get(key, "") or ""
+    """One of the platform's Discord credentials: ``client_id``,
+    ``client_secret``, ``bot_token`` or ``public_key``."""
+    from hubra.core.services.platform_settings import discord
+
+    return getattr(discord(), key) or ""
 
 
 def missing_settings() -> list[str]:
-    return [
-        k
-        for k in ("DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "DISCORD_BOT_TOKEN")
-        if not config(k)
-    ]
+    return [k for k in ("client_id", "client_secret", "bot_token") if not config(k)]
 
 
 def _open(request: urllib.request.Request, timeout: float):
@@ -92,7 +90,7 @@ def bot(
     """Call the API as the bot. Short rate limits are waited out (up to
     *wait* seconds in all); longer ones raise ``DiscordError``."""
     headers = {
-        "Authorization": f"Bot {config('DISCORD_BOT_TOKEN')}",
+        "Authorization": f"Bot {config('bot_token')}",
         "User-Agent": USER_AGENT,
     }
     if body is not None:
@@ -155,7 +153,7 @@ def assignable_roles(guild_id: str) -> list[dict]:
     """The server's roles the bot can give: below its own highest role, not
     @everyone and not managed by an integration."""
     all_roles = roles(guild_id)
-    me = member(guild_id, config("DISCORD_CLIENT_ID")) or {}
+    me = member(guild_id, config("client_id")) or {}
     by_id = {r["id"]: r for r in all_roles}
     top = max(
         (by_id[r]["position"] for r in me.get("roles", []) if r in by_id), default=0

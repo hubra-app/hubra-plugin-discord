@@ -33,24 +33,26 @@ ROLE_TRAINER = "910"
 ROLE_MEMBER = "911"
 ROLE_OTHER = "912"
 SIGNING_KEY = Ed25519PrivateKey.generate()
+APP_ID = "1111"
 
 
 @pytest.fixture
-def discord_settings(app):
+def discord_settings(app, db):
+    from hubra.core.services import platform_settings
+
     public = SIGNING_KEY.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
-    app.config.update(
-        DISCORD_CLIENT_ID="app1",
-        DISCORD_CLIENT_SECRET="secret",
-        DISCORD_BOT_TOKEN="bot-token",
-        DISCORD_PUBLIC_KEY=public,
-    )
+    keys = {
+        "discord.client_id": APP_ID,
+        "discord.client_secret": "secret",
+        "discord.bot_token": "bot-token",
+        "discord.public_key": public,
+    }
+    platform_settings.set_many(keys)
+    db.session.commit()
     yield
-    app.config.update(
-        DISCORD_CLIENT_ID="",
-        DISCORD_CLIENT_SECRET="",
-        DISCORD_BOT_TOKEN="",
-        DISCORD_PUBLIC_KEY="",
-    )
+    db.session.rollback()
+    platform_settings.set_many(dict.fromkeys(keys))
+    db.session.commit()
 
 
 @pytest.fixture
@@ -207,7 +209,7 @@ def _server(method, path, body=None, **_):
             {"id": "950", "name": "Hubra", "position": 5, "managed": True},
             {"id": "960", "name": "Admin", "position": 9},
         ]
-    if path.endswith("/members/app1"):
+    if path.endswith(f"/members/{APP_ID}"):
         return {"roles": ["950"]}
     raise AssertionError(path)
 

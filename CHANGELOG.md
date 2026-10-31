@@ -4,7 +4,7 @@
 
 The webhook is replaced by the Hubra bot. Needs a Hubra with connected apps
 (Einstellungen › Verbundene Apps) and the platform's Discord application set
-up (`DISCORD_*` settings, see Hubra's `docs/discord.md`).
+up under manage › Platform settings › Discord (see Hubra's `docs/discord.md`).
 
 - A club adds the bot to its server under Einstellungen › Verbundene Apps
   and picks what it may do: announcements, roles, sign-ups. An admin

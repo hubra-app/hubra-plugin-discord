@@ -63,7 +63,7 @@ COMMANDS = [
 
 def register() -> None:
     """Install the commands for the Hubra application (all servers)."""
-    app_id = api.config("DISCORD_CLIENT_ID")
+    app_id = api.config("client_id")
     api.bot("PUT", f"/applications/{app_id}/commands", COMMANDS)
 
 
