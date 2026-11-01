@@ -85,7 +85,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: hubra/app/frontend/package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
         working-directory: hubra/app/frontend
 
       - name: Test against Hubra
