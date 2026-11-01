@@ -16,11 +16,18 @@ from .api import DiscordError
 
 _log = logging.getLogger(__name__)
 
+# What the bot posts, each to its own channel if the club picks one, else to
+# the main channel (channel_id).
+KINDS = ("events", "posts", "polls", "reminders")
+
 DEFAULT_CONFIG = {
     "channel_id": None,
+    "channels": {},
     "announce_events": True,
     "announce_posts": True,
     "announce_polls": False,
+    # Event reminders and "poll closes soon" from the club's reminder job.
+    "announce_reminders": False,
     # Members-only events are left out unless the club says the channel is
     # for members only.
     "members_only_events": False,
@@ -39,6 +46,11 @@ def _permissions(scopes) -> int:
     if "roles" in scopes:
         bits |= api.MANAGE_ROLES
     return bits
+
+
+def channel_for(config: dict, kind: str) -> str | None:
+    """The channel *kind* goes to: its own, else the main channel."""
+    return (config.get("channels") or {}).get(kind) or config.get("channel_id")
 
 
 class DiscordApp:
@@ -155,6 +167,7 @@ class DiscordApp:
             "announce_events",
             "announce_posts",
             "announce_polls",
+            "announce_reminders",
             "members_only_events",
         ):
             if key in config:
@@ -162,6 +175,7 @@ class DiscordApp:
 
         needs_server = (
             "channel_id" in config
+            or "channels" in config
             or "role_map" in config
             or (str(config.get("mention", "")).startswith("role:"))
         )
@@ -193,6 +207,21 @@ class DiscordApp:
             if channel is not None and str(channel) not in server_channels:
                 raise apps.AppError("That channel isn't a text channel on the server")
             out["channel_id"] = str(channel) if channel else None
+
+        if "channels" in config:
+            picked = config["channels"]
+            if not isinstance(picked, dict) or set(picked) - set(KINDS):
+                raise apps.AppError(f"Channels are set per {', '.join(KINDS)}")
+            clean = {}
+            for kind, channel in picked.items():
+                if not channel:
+                    continue  # the main channel
+                if str(channel) not in server_channels:
+                    raise apps.AppError(
+                        "That channel isn't a text channel on the server"
+                    )
+                clean[kind] = str(channel)
+            out["channels"] = clean
 
         if "mention" in config:
             mention = str(config["mention"] or "")

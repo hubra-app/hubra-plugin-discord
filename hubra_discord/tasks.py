@@ -53,11 +53,15 @@ def _failed(conn, action: str, exc: DiscordError) -> None:
     max_retries=5,
     acks_late=True,
 )
-def send_announcement(self, connection_id: int, body: dict) -> None:
+def send_announcement(
+    self, connection_id: int, body: dict, kind: str | None = None
+) -> None:
+    from .app import channel_for
+
     with _connection(connection_id, "announce") as conn:
         if conn is None:
             return
-        channel = (conn.config or {}).get("channel_id")
+        channel = channel_for(conn.config or {}, kind or "")
         if not channel:
             return
         try:

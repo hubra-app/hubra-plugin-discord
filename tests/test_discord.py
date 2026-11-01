@@ -264,6 +264,26 @@ def test_settings_are_checked_against_the_server(
     sync.assert_called_once_with(conn.id)  # new mapping: sync right away
 
 
+def test_channel_per_kind_is_checked_against_the_server(client, db, club_auth, tenant):
+    conn = _conn(db, tenant)
+    url = f"/api/v1/apps/connections/{conn.id}"
+    with patch.object(api, "bot", side_effect=_server):
+        bad = client.patch(
+            url, json={"config": {"channels": {"reminders": "999"}}}, headers=H
+        )
+        unknown = client.patch(
+            url, json={"config": {"channels": {"gossip": CHANNEL}}}, headers=H
+        )
+        good = client.patch(
+            url,
+            json={"config": {"channels": {"reminders": CHANNEL, "posts": None}}},
+            headers=H,
+        )
+    assert bad.status_code == 400 and unknown.status_code == 400
+    assert good.status_code == 200, good.get_json()
+    assert good.get_json()["config"]["channels"] == {"reminders": CHANNEL}
+
+
 # ── Announcements ────────────────────────────────────────────────────────────
 
 
@@ -287,7 +307,8 @@ def test_public_event_is_announced_with_buttons(client, db, club_auth, tenant, q
         headers=H,
     )
     assert resp.status_code == 201, resp.get_json()
-    connection_id, body = queued.call_args.args
+    connection_id, body, kind = queued.call_args.args
+    assert kind == "events"
     assert connection_id == conn.id  # an id in the queue, never a token
     assert body["content"] == "@everyone"
     assert "url" not in body["embeds"][0] or "/club-a/app/" in body["embeds"][0]["url"]
@@ -397,6 +418,20 @@ def test_announcement_task_posts_and_records(app, db, tenant):
     bot.assert_called_once_with("POST", f"/channels/{CHANNEL}/messages", body)
     event = db.session.query(ConnectedAppEvent).filter_by(action="announced").one()
     assert event.ok and event.detail == "Hi"
+
+
+def test_each_kind_goes_to_its_own_channel_or_the_main_one(app, db, tenant):
+    from hubra_discord.tasks import send_announcement
+
+    conn = _conn(db, tenant, channels={"reminders": "905"})
+    body = payload("", [{"title": "Hi"}])
+    with patch.object(api, "bot") as bot:
+        send_announcement.run(conn.id, body, "reminders")
+        send_announcement.run(conn.id, body, "posts")
+    assert [c.args[1] for c in bot.call_args_list] == [
+        "/channels/905/messages",
+        f"/channels/{CHANNEL}/messages",
+    ]
 
 
 def test_announcement_task_records_a_lost_permission(app, db, tenant):
@@ -706,3 +741,84 @@ def test_status_command_for_admins(client, db, tenant, trainer):
     assert "Club server" in text and "verknüpftem Discord: 1" in text
     text = _signed(client, _command("hubra", user="999")).get_json()["data"]["content"]
     assert "Nur wer" in text
+
+
+# ── Reminders (from the club's reminder job) ─────────────────────────────────
+
+
+def _remind(db, tenant, hook, **payload):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import hooks
+
+    with in_club(tenant):
+        getattr(hooks, hook)(tenant_id=tenant.id, **payload)
+        db.session.commit()
+
+
+def test_event_reminder_goes_to_the_reminders_channel(
+    client, db, club_auth, tenant, queued
+):
+    conn = _conn(db, tenant, announce_events=False, announce_reminders=True)
+    resp = client.post(
+        "/api/v1/events/",
+        json={
+            "title": "Training",
+            "date": "2026-07-04",
+            "type": "Social",
+            "is_public": True,
+        },
+        headers=H,
+    )
+    queued.assert_not_called()  # new events are switched off
+    _remind(db, tenant, "on_event_reminder", event_id=resp.get_json()["id"])
+    connection_id, body, kind = queued.call_args.args
+    assert (connection_id, kind) == (conn.id, "reminders")
+    assert body["embeds"][0]["title"].startswith("⏰")
+    assert body["components"]  # sign-up buttons
+
+
+def test_reminders_are_off_unless_the_club_turns_them_on(
+    client, db, club_auth, tenant, queued
+):
+    _conn(db, tenant, announce_events=False)
+    resp = client.post(
+        "/api/v1/events/",
+        json={
+            "title": "T",
+            "date": "2026-07-04",
+            "type": "Social",
+            "is_public": True,
+        },
+        headers=H,
+    )
+    _remind(db, tenant, "on_event_reminder", event_id=resp.get_json()["id"])
+    queued.assert_not_called()
+
+
+def test_members_only_event_reminder_stays_off_discord(
+    client, db, club_auth, tenant, queued
+):
+    _conn(db, tenant, announce_events=False, announce_reminders=True)
+    resp = client.post(
+        "/api/v1/events/",
+        json={"title": "AGM", "date": "2026-07-04", "type": "Meeting"},
+        headers=H,
+    )
+    _remind(db, tenant, "on_event_reminder", event_id=resp.get_json()["id"])
+    queued.assert_not_called()
+
+
+def test_poll_closing_names_no_one(client, db, club_auth, tenant, queued):
+    _conn(db, tenant, announce_polls=False, announce_reminders=True)
+    resp = client.post(
+        "/api/v1/polls/",
+        json={"question": "Pizza?", "options": [{"label": "Yes"}, {"label": "No"}]},
+        headers=H,
+    )
+    _remind(db, tenant, "on_poll_closing", poll_id=resp.get_json()["id"])
+    _, body, kind = queued.call_args.args
+    assert kind == "reminders"
+    item = body["embeds"][0]
+    assert item["title"].startswith("⏳") and "Pizza?" in item["title"]
+    assert "Haven't voted" in item["description"]

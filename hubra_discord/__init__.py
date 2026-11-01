@@ -17,7 +17,9 @@ from hubra.core.modules.events import (
     ACCOUNT_LINKED,
     ACCOUNT_UNLINKED,
     EVENT_PUBLISHED,
+    EVENT_REMINDER,
     GROUP_MEMBERSHIP_CHANGED,
+    POLL_CLOSING,
     POLL_PUBLISHED,
     POST_PUBLISHED,
 )
@@ -46,7 +48,7 @@ module = Module(
             scopes=(
                 AppScope(
                     "announce",
-                    "Post new events, posts and polls in a channel",
+                    "Post new events, posts, polls and reminders in your channels",
                     "Members-only events and polls for some groups stay out.",
                 ),
                 AppScope(
@@ -66,6 +68,8 @@ module = Module(
         EVENT_PUBLISHED: f"{_HOOKS}:on_event_published",
         POST_PUBLISHED: f"{_HOOKS}:on_post_published",
         POLL_PUBLISHED: f"{_HOOKS}:on_poll_published",
+        EVENT_REMINDER: f"{_HOOKS}:on_event_reminder",
+        POLL_CLOSING: f"{_HOOKS}:on_poll_closing",
         GROUP_MEMBERSHIP_CHANGED: f"{_HOOKS}:on_group_membership_changed",
         ACCOUNT_LINKED: f"{_HOOKS}:on_account_linked",
         ACCOUNT_UNLINKED: f"{_HOOKS}:on_account_unlinked",

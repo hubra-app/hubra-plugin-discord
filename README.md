@@ -2,8 +2,8 @@
 
 [![Test and release](https://github.com/hubra-app/hubra-plugin-discord/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/hubra-app/hubra-plugin-discord/actions/workflows/release.yml?query=branch%3Amain) [![License: all rights reserved](https://img.shields.io/badge/license-all%20rights%20reserved-lightgrey)](LICENSE)
 
-A plugin for [Hubra](https://hubra.club). The Hubra bot on a club's Discord server: announcements of new events, posts
-and polls, Discord roles that follow the club's groups, functions and tiers,
+A plugin for [Hubra](https://hubra.club). The Hubra bot on a club's Discord server: announcements of new events, posts,
+polls and reminders (each kind in its own channel if the club wants), Discord roles that follow the club's groups, functions and tiers,
 and event sign-ups with buttons and slash commands.
 
 **Version** 2.0.0 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`

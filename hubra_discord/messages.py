@@ -97,3 +97,22 @@ def poll_embed(poll) -> dict[str, Any]:
         club_url("/app/operations/polls"),
         fields,
     )
+
+
+def event_reminder_embed(event) -> dict[str, Any]:
+    item = event_embed(event)
+    item["title"] = _clip(f"⏰ Reminder: {event.title}", 256)
+    return item
+
+
+def poll_closing_embed(poll) -> dict[str, Any]:
+    # Who still has to vote is only known in the app, so no names here.
+    fields = []
+    if poll.closes_at:
+        fields.append(("Closes", poll.closes_at.strftime("%d.%m.%Y %H:%M")))
+    return embed(
+        f"⏳ Closes soon: {poll.question}",
+        "Haven't voted yet? Vote in the member portal.",
+        club_url("/app/operations/polls"),
+        fields,
+    )

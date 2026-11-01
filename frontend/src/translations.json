@@ -4,7 +4,7 @@
       "saved": "Saved",
       "saveFailed": "Saving failed",
       "announcements": "Announcements",
-      "channel": "Channel",
+      "channel": "Main channel",
       "pickChannel": "Pick a channel",
       "events": "New events",
       "posts": "New posts",
@@ -19,7 +19,11 @@
       "role": "Discord role",
       "remove": "Remove",
       "notAssignable": "The bot can't give this role: {{roles}}",
-      "addRole": "Map a role"
+      "addRole": "Map a role",
+      "channelHint": "Everything without its own channel below goes here.",
+      "mainChannel": "Main channel",
+      "channelFor": "Channel for {{what}}",
+      "reminders": "Reminders (event coming up, poll closing soon)"
     }
   },
   "de-CH": {
@@ -27,7 +31,7 @@
       "saved": "Gespeichert",
       "saveFailed": "Speichern fehlgeschlagen",
       "announcements": "Ankündigungen",
-      "channel": "Kanal",
+      "channel": "Hauptkanal",
       "pickChannel": "Kanal wählen",
       "events": "Neue Anlässe",
       "posts": "Neue Beiträge",
@@ -42,7 +46,11 @@
       "role": "Discord-Rolle",
       "remove": "Entfernen",
       "notAssignable": "Der Bot kann diese Rolle nicht vergeben: {{roles}}",
-      "addRole": "Rolle zuordnen"
+      "addRole": "Rolle zuordnen",
+      "channelHint": "Hierhin geht alles, wofür unten kein eigener Kanal gewählt ist.",
+      "mainChannel": "Hauptkanal",
+      "channelFor": "Kanal für {{what}}",
+      "reminders": "Erinnerungen (Anlass steht bevor, Umfrage schliesst bald)"
     }
   }
 }

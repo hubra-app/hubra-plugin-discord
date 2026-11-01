@@ -9,7 +9,12 @@ up under manage › Platform settings › Discord (see Hubra's `docs/discord.md`
 - A club adds the bot to its server under Einstellungen › Verbundene Apps
   and picks what it may do: announcements, roles, sign-ups. An admin
   confirms the server in Hubra before the bot does anything.
-- Announcements go to a channel the club picks. Members-only events stay
+- Announcements go to a main channel the club picks, and each kind (new
+  events, posts, polls, reminders) can have its own channel instead.
+- Reminders from the club's reminder job: "event coming up" (with sign-up
+  buttons) and "poll closes soon" (names no one; the app reminds those who
+  haven't voted). Off until the club switches them on.
+- Members-only content stays limited: members-only events stay
   out unless the club says the channel is members-only; posts show only the
   title and summary; polls for some groups only are never posted.
 - Discord roles follow groups, functions, tiers or "all members", for

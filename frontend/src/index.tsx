@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
 import { ActionIcon, Alert, Button, Group, Select, Stack, Switch, Text } from '@mantine/core'
 import { useQuery } from '@tanstack/react-query'
-import { getConnectionOptions, registerPlugin, updateConnection, useT, useToast } from '@hubra/plugin-sdk'
+import {
+  getConnectionOptions,
+  registerPlugin,
+  updateConnection,
+  useT,
+  useToast,
+} from '@hubra/plugin-sdk'
 import type { Connection, SlotProps } from '@hubra/plugin-sdk'
 import translations from './translations.json'
 
@@ -16,23 +22,46 @@ interface RoleMapping {
   role_id: string
 }
 
+type Kind = 'events' | 'posts' | 'polls' | 'reminders'
+
 interface DiscordConfig {
   channel_id: string | null
+  channels: Partial<Record<Kind, string>>
   announce_events: boolean
   announce_posts: boolean
   announce_polls: boolean
+  announce_reminders: boolean
   members_only_events: boolean
   mention: string
   role_map: RoleMapping[]
 }
 
+const KINDS: {
+  kind: Kind
+  toggle: 'announce_events' | 'announce_posts' | 'announce_polls' | 'announce_reminders'
+  labelKey: string
+  label: string
+}[] = [
+  { kind: 'events', toggle: 'announce_events', labelKey: 'discord.events', label: 'Neue Anlässe' },
+  { kind: 'posts', toggle: 'announce_posts', labelKey: 'discord.posts', label: 'Neue Beiträge' },
+  { kind: 'polls', toggle: 'announce_polls', labelKey: 'discord.polls', label: 'Neue Umfragen' },
+  {
+    kind: 'reminders',
+    toggle: 'announce_reminders',
+    labelKey: 'discord.reminders',
+    label: 'Erinnerungen (Anlass steht bevor, Umfrage schliesst bald)',
+  },
+]
+
 function readConfig(c: Connection): DiscordConfig {
   const raw = c.config as Partial<DiscordConfig>
   return {
     channel_id: raw.channel_id ?? null,
+    channels: raw.channels ?? {},
     announce_events: raw.announce_events ?? true,
     announce_posts: raw.announce_posts ?? true,
     announce_polls: raw.announce_polls ?? false,
+    announce_reminders: raw.announce_reminders ?? false,
     members_only_events: raw.members_only_events ?? false,
     mention: raw.mention ?? '',
     role_map: raw.role_map ?? [],
@@ -64,6 +93,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const announce = connection.scopes.includes('announce')
   const roles = connection.scopes.includes('roles')
   const set = (patch: Partial<DiscordConfig>) => setConfig((c) => ({ ...c, ...patch }))
+  const channelData = options.data.channels.map((c) => ({ value: c.id, label: `#${c.name}` }))
   const roleName = (id: string) => options.data.roles.find((r) => r.id === id)?.name ?? id
 
   const save = async () => {
@@ -73,9 +103,11 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
       if (announce) {
         Object.assign(sent, {
           channel_id: config.channel_id,
+          channels: config.channels,
           announce_events: config.announce_events,
           announce_posts: config.announce_posts,
           announce_polls: config.announce_polls,
+          announce_reminders: config.announce_reminders,
           members_only_events: config.members_only_events,
           mention: config.mention,
         })
@@ -99,31 +131,48 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
             {t('discord.announcements', 'Ankündigungen')}
           </Text>
           <Select
-            label={t('discord.channel', 'Kanal')}
+            label={t('discord.channel', 'Hauptkanal')}
+            description={t(
+              'discord.channelHint',
+              'Hierhin geht alles, wofür unten kein eigener Kanal gewählt ist.',
+            )}
             placeholder={t('discord.pickChannel', 'Kanal wählen')}
-            data={options.data.channels.map((c) => ({ value: c.id, label: `#${c.name}` }))}
+            data={channelData}
             value={config.channel_id}
             onChange={(v) => set({ channel_id: v })}
             searchable
             clearable
           />
-          <Group gap="lg">
-            <Switch
-              label={t('discord.events', 'Neue Anlässe')}
-              checked={config.announce_events}
-              onChange={(e) => set({ announce_events: e.currentTarget.checked })}
-            />
-            <Switch
-              label={t('discord.posts', 'Neue Beiträge')}
-              checked={config.announce_posts}
-              onChange={(e) => set({ announce_posts: e.currentTarget.checked })}
-            />
-            <Switch
-              label={t('discord.polls', 'Neue Umfragen')}
-              checked={config.announce_polls}
-              onChange={(e) => set({ announce_polls: e.currentTarget.checked })}
-            />
-          </Group>
+          {KINDS.map(({ kind, toggle, labelKey, label }) => (
+            <Group key={kind} gap="sm" wrap="nowrap" align="center">
+              <Switch
+                style={{ flex: 1 }}
+                label={t(labelKey, label)}
+                checked={config[toggle]}
+                onChange={(e) =>
+                  set({ [toggle]: e.currentTarget.checked } as Partial<DiscordConfig>)
+                }
+              />
+              <Select
+                style={{ flex: 1 }}
+                aria-label={t('discord.channelFor', 'Kanal für {{what}}', {
+                  what: t(labelKey, label),
+                })}
+                placeholder={t('discord.mainChannel', 'Hauptkanal')}
+                data={channelData}
+                value={config.channels[kind] ?? null}
+                onChange={(v) => {
+                  const channels = { ...config.channels }
+                  if (v) channels[kind] = v
+                  else delete channels[kind]
+                  set({ channels })
+                }}
+                disabled={!config[toggle]}
+                searchable
+                clearable
+              />
+            </Group>
+          ))}
           <Switch
             label={t('discord.membersOnly', 'Auch Anlässe nur für Mitglieder')}
             description={t(
@@ -167,7 +216,11 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                 value={m.source || null}
                 searchable
                 onChange={(v) =>
-                  set({ role_map: config.role_map.map((x, j) => (j === i ? { ...x, source: v ?? '' } : x)) })
+                  set({
+                    role_map: config.role_map.map((x, j) =>
+                      j === i ? { ...x, source: v ?? '' } : x,
+                    ),
+                  })
                 }
               />
               <Select
@@ -181,7 +234,11 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                 value={m.role_id || null}
                 searchable
                 onChange={(v) =>
-                  set({ role_map: config.role_map.map((x, j) => (j === i ? { ...x, role_id: v ?? '' } : x)) })
+                  set({
+                    role_map: config.role_map.map((x, j) =>
+                      j === i ? { ...x, role_id: v ?? '' } : x,
+                    ),
+                  })
                 }
               />
               <ActionIcon
@@ -194,11 +251,16 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
               </ActionIcon>
             </Group>
           ))}
-          {config.role_map.some((m) => m.role_id && !options.data.roles.find((r) => r.id === m.role_id)?.assignable) && (
+          {config.role_map.some(
+            (m) => m.role_id && !options.data.roles.find((r) => r.id === m.role_id)?.assignable,
+          ) && (
             <Alert color="orange" variant="light">
               {t('discord.notAssignable', 'Der Bot kann diese Rolle nicht vergeben: {{roles}}', {
                 roles: config.role_map
-                  .filter((m) => m.role_id && !options.data.roles.find((r) => r.id === m.role_id)?.assignable)
+                  .filter(
+                    (m) =>
+                      m.role_id && !options.data.roles.find((r) => r.id === m.role_id)?.assignable,
+                  )
                   .map((m) => '@' + roleName(m.role_id))
                   .join(', '),
               })}
@@ -229,6 +291,13 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
 
 registerPlugin({
   id: 'discord',
-  slots: [{ slot: 'apps.connection', module: 'discord', perm: 'apps.apps.manage', component: DiscordSettings }],
+  slots: [
+    {
+      slot: 'apps.connection',
+      module: 'discord',
+      perm: 'apps.apps.manage',
+      component: DiscordSettings,
+    },
+  ],
   translations,
 })
