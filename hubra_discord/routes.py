@@ -28,6 +28,24 @@ discord_bp = Blueprint("discord_bp", __name__)
 MAX_AGE = 300
 
 
+PAUSED = "Hubra wird gerade aktualisiert. Bitte versuche es in ein paar Minuten wieder."
+
+
+def _club_paused(tenant_id: int) -> bool:
+    """A maintenance window just for this club (or for some clubs) is on."""
+    try:
+        from hubra.core.services import maintenance
+    except ImportError:
+        return False
+    club_state = getattr(maintenance, "club_state", None)
+    if club_state is None:  # Hubra before maintenance windows
+        return False
+    try:
+        return bool(club_state(tenant_id)["active"])
+    except Exception:  # noqa: BLE001  never lock a club out over this check
+        return False
+
+
 def verified(body: bytes, signature: str, timestamp: str) -> bool:
     key = api.config("public_key")
     if not key or not signature or not timestamp:
@@ -78,12 +96,7 @@ def interactions():
         from hubra.core.services import maintenance
 
         if maintenance.is_active():
-            return jsonify(
-                reply(
-                    "Hubra wird gerade aktualisiert. Bitte versuche es in ein paar "
-                    "Minuten wieder."
-                )
-            ), 200
+            return jsonify(reply(PAUSED)), 200
     except ImportError:
         pass
 
@@ -94,6 +107,8 @@ def interactions():
         return jsonify(
             reply("Dieser Server ist mit keinem Verein in Hubra verbunden.")
         ), 200
+    if _club_paused(tenant.id):
+        return jsonify(reply(PAUSED)), 200
     with in_club(tenant):
         if not is_enabled("discord"):
             return jsonify(reply("Discord ist für diesen Verein ausgeschaltet.")), 200

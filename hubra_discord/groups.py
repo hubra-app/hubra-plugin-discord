@@ -64,8 +64,15 @@ def create(conn, group_id: int, role_map: list[dict]) -> dict:
         raise apps.AppError(f"There is no group {group_id}")
     guild = conn.external_id
     reason = f"Hubra: channel for the group {group.name}"
+    # A role the club maps to the group, or the group's automatic role.
+    from .group_roles import role_sources as auto_roles
+
     role_id = next(
-        (m["role_id"] for m in role_map if m.get("source") == f"group:{group_id}"),
+        (
+            m["role_id"]
+            for m in list(role_map) + auto_roles(conn)
+            if m.get("source") == f"group:{group_id}"
+        ),
         None,
     )
     if role_id is None:

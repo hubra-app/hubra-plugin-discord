@@ -55,7 +55,9 @@
       "hubraNews": "Announce new Hubra versions",
       "hubraNewsHint": "In the main channel, with the main changes.",
       "maintenanceNotices": "Announce maintenance",
-      "maintenanceNoticesHint": "In the main channel: planned maintenance, start and end. Hubra is briefly unavailable then."
+      "maintenanceNoticesHint": "In the main channel: planned maintenance, start and end. Hubra is briefly unavailable then.",
+      "groupRoles": "A role for every group",
+      "groupRolesHint": "The bot makes a role named after each open and visible group and keeps it up to date: renames, deletions, who is in it. Private groups get none, since everyone on Discord sees who holds a role. Groups mapped below keep their role. Turning this off deletes these roles."
     }
   },
   "de-CH": {
@@ -114,7 +116,9 @@
       "hubraNews": "Neue Hubra-Versionen ankündigen",
       "hubraNewsHint": "Im Hauptkanal, mit den wichtigsten Neuerungen.",
       "maintenanceNotices": "Wartungen ankündigen",
-      "maintenanceNoticesHint": "Im Hauptkanal: geplante Wartung, Beginn und Ende. Hubra ist dann kurz nicht erreichbar."
+      "maintenanceNoticesHint": "Im Hauptkanal: geplante Wartung, Beginn und Ende. Hubra ist dann kurz nicht erreichbar.",
+      "groupRoles": "Rolle für jede Gruppe",
+      "groupRolesHint": "Der Bot legt für jede offene und sichtbare Gruppe eine Rolle mit ihrem Namen an und hält sie aktuell: umbenennen, löschen, wer drin ist. Private Gruppen bekommen keine, weil auf Discord alle sehen, wer eine Rolle hat. Unten zugeordnete Gruppen behalten ihre Rolle. Ausschalten löscht diese Rollen."
     }
   }
 }

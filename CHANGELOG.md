@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.4.0
+
+- **A role for every group** (Settings › Verbundene Apps › Discord › Rollen:
+  "Rolle für jede Gruppe", off by default, needs the roles permission): the
+  bot makes a role named after each open or visible group, gives it to the
+  group's members who linked Discord, renames it with the group and deletes
+  it when the group is deleted, archived or turns private, or when the
+  switch is turned off. Private groups get no automatic role, since everyone
+  on a server sees who holds a role. Groups mapped to a role by hand or with
+  a group channel keep that role; a new group channel takes over the
+  automatic role. Up to 50 groups.
+- Roles the bot makes (group channels too) no longer copy @everyone's
+  permissions; they have none.
+- Joining the platform's own server hands over to Hubra's platform roles
+  (needs Hubra with `platform_roles`).
+- A maintenance window for one club (or some clubs) now also pauses that
+  club's Discord commands and buttons, not only platform-wide maintenance.
+
 ## 2.3.0
 
 Needs a Hubra with the platform bot (``hubra.core.services.platform_bot``,
