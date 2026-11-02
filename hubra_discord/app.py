@@ -33,19 +33,93 @@ DEFAULT_CONFIG = {
     "members_only_events": False,
     "mention": "",
     "role_map": [],
+    # The bot as the club on this server (nickname, logo, bio), and the
+    # club's colour, name and logo on announcements. See profile.py.
+    "club_profile": True,
+    "club_embeds": True,
+    # Buttons to vote under poll announcements (``commands`` scope).
+    "poll_buttons": True,
+    # The club's events as the server's events (``events`` scope).
+    "discord_events": True,
+    # Private channels per group (``channels`` scope): [{group_id,
+    # channel_id, role_id, name}]; their group's events and polls go there.
+    "group_channels": [],
+    "group_announce": True,
+    # Direct messages (``notify`` scope): a welcome for new people on the
+    # server (needs the gateway process), with an optional own text.
+    "welcome_dm": False,
+    "welcome_text": "",
+    # /trainings: members check in and excuse themselves.
+    "self_checkin": True,
 }
+# Kept by the bot, not set by the club.
+INTERNAL = ("guild_name", "profile_applied", "scheduled_events")
+BOOLS = (
+    "announce_events",
+    "announce_posts",
+    "announce_polls",
+    "announce_reminders",
+    "members_only_events",
+    "club_profile",
+    "club_embeds",
+    "poll_buttons",
+    "discord_events",
+    "group_announce",
+    "welcome_dm",
+    "self_checkin",
+)
 MAX_ROLE_MAP = 50
 
 
 def _permissions(scopes) -> int:
-    bits = 0
+    bits = api.CHANGE_NICKNAME if scopes else 0
     if "announce" in scopes:
         bits |= api.VIEW_CHANNEL | api.SEND_MESSAGES | api.EMBED_LINKS
     if "commands" in scopes:
         bits |= api.VIEW_CHANNEL | api.SEND_MESSAGES | api.EMBED_LINKS
     if "roles" in scopes:
         bits |= api.MANAGE_ROLES
+    if "events" in scopes:
+        bits |= api.CREATE_EVENTS
+    if "channels" in scopes:
+        bits |= (
+            api.MANAGE_CHANNELS
+            | api.MANAGE_ROLES
+            | api.VIEW_CHANNEL
+            | api.SEND_MESSAGES
+            | api.EMBED_LINKS
+            | api.READ_MESSAGE_HISTORY
+        )
     return bits
+
+
+def grant_url(conn) -> str:
+    """Add the bot again with what the connection's scopes need now: Discord
+    updates the bot's role on that server (for scopes turned on later)."""
+    query = urllib.parse.urlencode(
+        {
+            "client_id": api.config("client_id"),
+            "scope": "bot applications.commands",
+            "permissions": str(_permissions(conn.scopes or [])),
+            "guild_id": conn.external_id,
+            "disable_guild_select": "true",
+            "integration_type": "0",
+        }
+    )
+    return f"https://discord.com/oauth2/authorize?{query}"
+
+
+def missing_permissions(conn) -> list[str]:
+    """What the scopes need that the bot lacks on the server."""
+    need = _permissions(conn.scopes or [])
+    have = api.guild_permissions(conn.external_id)
+    if have & api.ADMINISTRATOR:
+        return []
+    return [
+        name
+        for bit, name in api.PERMISSION_NAMES.items()
+        if need & bit and not have & bit
+    ]
 
 
 def channel_for(config: dict, kind: str) -> str | None:
@@ -126,17 +200,24 @@ class DiscordApp:
 
     def confirmed(self, conn):
         from .hooks import after_commit
-        from .tasks import sync_connection
+        from .tasks import apply_profile, sync_connection
+
+        after_commit(apply_profile.delay, conn.id)
 
         if apps.has_scope(conn, "roles"):
             after_commit(sync_connection.delay, conn.id)
+        if apps.has_scope(conn, "events"):
+            from .tasks import sync_events
+
+            after_commit(sync_events.delay, conn.id)
         if apps.has_scope(conn, "commands"):
             from .commands import register_after_commit
 
             register_after_commit(conn)
 
     def options(self, conn):
-        """Channels and roles on the server, and what the club can map."""
+        """Channels and roles on the server, what the club can map, and the
+        permissions the bot still lacks for the scopes."""
         from .roles import sources
 
         guild = conn.external_id
@@ -148,6 +229,7 @@ class DiscordApp:
             ]
             all_roles = api.roles(guild)
             assignable = {r["id"] for r in api.assignable_roles(guild)}
+            missing = missing_permissions(conn)
         except DiscordError as exc:
             raise apps.AppError(_explain(exc)) from exc
         roles = [
@@ -155,23 +237,54 @@ class DiscordApp:
             for r in sorted(all_roles, key=lambda r: -r["position"])
             if r["id"] != guild and not r.get("managed")
         ]
-        return {"channels": channels, "roles": roles, "sources": sources()}
+        return {
+            "channels": channels,
+            "roles": roles,
+            "sources": sources(),
+            "missingPermissions": missing,
+            "grantUrl": grant_url(conn),
+        }
+
+    def deliver_notification(self, conn, external_id, payload):
+        from .notify import deliver
+
+        return deliver(conn, external_id, payload)
 
     def update_config(self, conn, config):
         from .roles import sources
 
         out = dict(DEFAULT_CONFIG)
         out.update({k: v for k, v in (conn.config or {}).items() if k in out})
-        out["guild_name"] = (conn.config or {}).get("guild_name", "")
-        for key in (
-            "announce_events",
-            "announce_posts",
-            "announce_polls",
-            "announce_reminders",
-            "members_only_events",
-        ):
+        for key in INTERNAL:
+            if key in (conn.config or {}):
+                out[key] = (conn.config or {})[key]
+        out.setdefault("guild_name", "")
+        for key in BOOLS:
             if key in config:
                 out[key] = bool(config[key])
+        if "welcome_text" in config:
+            text = str(config["welcome_text"] or "").strip()
+            from .notify import MAX_WELCOME
+
+            if len(text) > MAX_WELCOME:
+                raise apps.AppError(
+                    f"The welcome text is limited to {MAX_WELCOME} characters"
+                )
+            out["welcome_text"] = text
+        if (
+            "discord_events" in config or "members_only_events" in config
+        ) and apps.has_scope(conn, "events"):
+            from .hooks import after_commit
+            from .tasks import sync_events
+
+            after_commit(sync_events.delay, conn.id)
+        if "club_profile" in config:
+            from .hooks import after_commit
+            from .tasks import apply_profile
+
+            # Also picks up a new club name or logo; nothing is sent when
+            # nothing changed.
+            after_commit(apply_profile.delay, conn.id)
 
         needs_server = (
             "channel_id" in config
@@ -259,6 +372,21 @@ class DiscordApp:
 
                 after_commit(sync_connection.delay, conn.id)
             out["role_map"] = clean
+
+        if "group_channels" in config:
+            if not apps.has_scope(conn, "channels"):
+                raise apps.AppError("Turn on group channels for this connection first")
+            from .groups import update as update_groups
+
+            entries = update_groups(
+                conn, config["group_channels"], out.get("role_map") or []
+            )
+            if entries != out.get("group_channels"):
+                from .hooks import after_commit
+                from .tasks import sync_connection
+
+                after_commit(sync_connection.delay, conn.id)  # roles for the channels
+            out["group_channels"] = entries
         return out
 
     def test(self, conn):
@@ -284,6 +412,12 @@ class DiscordApp:
         return "Test message sent"
 
     def revoke(self, conn):
+        from .scheduled import remove_all
+
+        try:
+            remove_all(conn)  # the bot's events would stay behind
+        except DiscordError as exc:
+            _log.info("discord: could not remove the events: %s", exc)
         try:
             api.leave(conn.external_id)
         except DiscordError as exc:

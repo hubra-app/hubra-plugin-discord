@@ -86,15 +86,22 @@ def post_embed(post) -> dict[str, Any]:
     )
 
 
-def poll_embed(poll) -> dict[str, Any]:
-    options = "\n".join(f"• {o.label}" for o in poll.options)
+def poll_embed(poll, with_buttons: bool = False) -> dict[str, Any]:
+    options = "\n".join(
+        f"• {o.label}" for o in sorted(poll.options, key=lambda o: o.id)
+    )
     fields = []
     if poll.closes_at:
         fields.append(("Closes", poll.closes_at.strftime("%d.%m.%Y %H:%M")))
+    how = (
+        "Vote with the buttons below (only you see your answer), or in the member portal."
+        if with_buttons
+        else "Vote in the member portal."
+    )
     return embed(
         f"🗳️ {poll.question}",
-        f"{options}\n\nVote in the member portal.",
-        club_url("/app/operations/polls"),
+        f"{options}\n\n{how}",
+        club_url(f"/app/operations/polls?poll={poll.id}"),
         fields,
     )
 

@@ -2,8 +2,10 @@
 
 A club connects its server under Einstellungen › Verbundene Apps. The bot
 then announces new events, posts and polls, keeps Discord roles in line
-with the club's groups, functions and tiers, and lets linked members sign
-up for events and use slash commands.
+with the club's groups, functions and tiers, lets linked members sign up,
+vote and check in with buttons and slash commands, shows the club's events
+in the server's Events list, keeps private channels per group, and sends
+members their notifications as direct messages when they ask for it.
 """
 
 from hubra.core.modules import (
@@ -25,6 +27,14 @@ from hubra.core.modules.events import (
 )
 
 _HOOKS = "hubra_discord.hooks"
+# Hubra versions before event.changed and module processes still load the
+# plugin; they just never send the event or run the gateway.
+EVENT_CHANGED = "event.changed"
+_EXTRA = (
+    {"processes": {"discord-gateway": "hubra_discord.gateway:run"}}
+    if "processes" in getattr(Module, "__dataclass_fields__", {})
+    else {}
+)
 
 module = Module(
     code="discord",
@@ -58,14 +68,32 @@ module = Module(
                 ),
                 AppScope(
                     "commands",
-                    "Let linked members sign up for events and use /events",
-                    "Same rules as in the app.",
+                    "Let linked members sign up for events, vote on polls and use "
+                    "/events, /invoices, /trainings and /profile",
+                    "Same rules as in the app; answers only the person sees.",
+                ),
+                AppScope(
+                    "events",
+                    "Show the club's events in the server's Events list",
+                    "Public events only, unless you say the server is for members.",
+                ),
+                AppScope(
+                    "channels",
+                    "Make a private channel for each group you pick",
+                    "Only the group's members who linked Discord see it.",
+                ),
+                AppScope(
+                    "notify",
+                    "Send direct messages: notifications members ask for, "
+                    "and a welcome for new people",
+                    "Members choose per topic; nothing is sent unless they do.",
                 ),
             ),
         ),
     ),
     events={
         EVENT_PUBLISHED: f"{_HOOKS}:on_event_published",
+        EVENT_CHANGED: f"{_HOOKS}:on_event_changed",
         POST_PUBLISHED: f"{_HOOKS}:on_post_published",
         POLL_PUBLISHED: f"{_HOOKS}:on_poll_published",
         EVENT_REMINDER: f"{_HOOKS}:on_event_reminder",
@@ -75,6 +103,9 @@ module = Module(
         ACCOUNT_UNLINKED: f"{_HOOKS}:on_account_unlinked",
     },
     tasks=("hubra_discord.tasks",),
+    # processes: the gateway, only for "someone joined the server" (welcome,
+    # roles on join).
+    **_EXTRA,
     schedule=(
         Schedule(
             "discord-role-sync",

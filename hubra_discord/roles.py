@@ -108,12 +108,25 @@ def _names(guild_id: str) -> dict[str, str]:
         return {}
 
 
+def managed_map(conn) -> list[dict]:
+    """The role mappings Hubra keeps up: the club's own (``roles`` scope)
+    and the roles of group channels (``channels`` scope)."""
+    from .groups import role_sources
+
+    own = (
+        list((conn.config or {}).get("role_map") or [])
+        if apps.has_scope(conn, "roles")
+        else []
+    )
+    return own + role_sources(conn)
+
+
 def apply(conn, user_id: str, want: set[str], label: str, names: dict | None = None):
     """Make the mapped roles of Discord user *user_id* equal *want*.
 
     Returns a short text of what changed, or None (no change, or the user
     isn't on the server)."""
-    managed = {m["role_id"] for m in (conn.config or {}).get("role_map", [])}
+    managed = {m["role_id"] for m in managed_map(conn)}
     on_server = api.member(conn.external_id, user_id)
     if on_server is None:
         return None
@@ -134,11 +147,7 @@ def apply(conn, user_id: str, want: set[str], label: str, names: dict | None = N
 
 
 def wanted(conn, member) -> set[str]:
-    return {
-        m["role_id"]
-        for m in (conn.config or {}).get("role_map", [])
-        if matches(m["source"], member)
-    }
+    return {m["role_id"] for m in managed_map(conn) if matches(m["source"], member)}
 
 
 def _name(member) -> str:
@@ -146,7 +155,7 @@ def _name(member) -> str:
 
 
 def sync_member(conn, member, names: dict | None = None) -> str | None:
-    if not apps.has_scope(conn, "roles"):
+    if not managed_map(conn):
         return None
     user_id = discord_id(member)
     if not user_id:
@@ -159,7 +168,7 @@ def sync_all(conn) -> int:
     from hubra.core.models.connected_app import ExternalAccount
     from hubra.core.models.member import Member
 
-    if not apps.has_scope(conn, "roles") or not (conn.config or {}).get("role_map"):
+    if not managed_map(conn):
         return 0
     linked = set(
         db.session.scalars(

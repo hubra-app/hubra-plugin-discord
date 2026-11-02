@@ -106,7 +106,15 @@ def test_manifest_declares_the_app_tasks_and_schedule(app):
 
     module, provider = registry.app_provider("discord")
     assert module.code == "discord"
-    assert [s.key for s in provider.scopes] == ["announce", "roles", "commands"]
+    assert [s.key for s in provider.scopes] == [
+        "announce",
+        "roles",
+        "commands",
+        "events",
+        "channels",
+        "notify",
+    ]
+    assert registry.processes()["discord-gateway"] == "hubra_discord.gateway:run"
     assert "hubra_discord.tasks" in registry.task_modules()
     assert any(
         s.task == "hubra_discord.tasks.sync_all_clubs" for s in registry.schedules()
@@ -129,9 +137,12 @@ def test_authorize_url_asks_for_little(app, discord_settings):
     query = parse_qs(url.query)
     assert query["scope"] == ["bot applications.commands"]
     bits = int(query["permissions"][0])
-    assert (
-        bits
-        == api.VIEW_CHANNEL | api.SEND_MESSAGES | api.EMBED_LINKS | api.MANAGE_ROLES
+    assert bits == (
+        api.VIEW_CHANNEL
+        | api.SEND_MESSAGES
+        | api.EMBED_LINKS
+        | api.MANAGE_ROLES
+        | api.CHANGE_NICKNAME
     )
     assert not bits & 8  # never Administrator
     assert query["state"] == ["st"]
@@ -176,11 +187,13 @@ def test_connect_confirm_and_disconnect(client, db, club_auth, tenant):
     with (
         patch("hubra_discord.tasks.sync_connection.delay") as sync,
         patch("hubra_discord.tasks.register_commands.delay") as register,
+        patch("hubra_discord.tasks.apply_profile.delay") as profile,
     ):
         resp = client.post(f"/api/v1/apps/connections/{conn_id}/confirm", headers=H)
     assert resp.status_code == 200
     sync.assert_called_once_with(conn_id)
     register.assert_called_once()
+    profile.assert_called_once_with(conn_id)
     assert apps.active("discord", GUILD).id == conn_id
 
     with patch.object(api, "bot") as bot:
@@ -411,7 +424,7 @@ def test_only_the_configured_mention_pings():
 def test_announcement_task_posts_and_records(app, db, tenant):
     from hubra_discord.tasks import send_announcement
 
-    conn = _conn(db, tenant)
+    conn = _conn(db, tenant, club_embeds=False)
     body = payload("", [{"title": "Hi"}])
     with patch.object(api, "bot") as bot:
         send_announcement.run(conn.id, body)
@@ -822,3 +835,654 @@ def test_poll_closing_names_no_one(client, db, club_auth, tenant, queued):
     item = body["embeds"][0]
     assert item["title"].startswith("⏳") and "Pizza?" in item["title"]
     assert "Haven't voted" in item["description"]
+
+
+# ── The club's look ──────────────────────────────────────────────────────────
+
+PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _brand(db, tenant, **branding):
+    tenant.settings = {**(tenant.settings or {}), "branding": branding}
+    db.session.commit()
+
+
+def test_announcements_carry_the_club_look(app, db, tenant):
+    from hubra_discord.tasks import send_announcement
+
+    app.config["API_PUBLIC_URL"] = "https://api.example.org"
+    _brand(db, tenant, club_name="FC Example", primary_color="#12ab34", logo=PNG)
+    conn = _conn(db, tenant)
+    try:
+        with patch.object(api, "bot") as bot:
+            send_announcement.run(conn.id, payload("", [{"title": "Hi", "color": 1}]))
+    finally:
+        app.config["API_PUBLIC_URL"] = ""
+    embed = bot.call_args.args[2]["embeds"][0]
+    assert embed["color"] == 0x12AB34
+    assert embed["author"]["name"] == "FC Example"
+    assert embed["author"]["icon_url"].startswith(
+        "https://api.example.org/api/v1/system/clubs/club-a/logo?v="
+    )
+
+
+def test_profile_sets_nick_avatar_and_bio_once(app, db, tenant):
+    from hubra_discord.tasks import apply_profile
+
+    _brand(db, tenant, club_name="FC Example", logo=PNG, locale="de-CH")
+    conn = _conn(db, tenant)
+    with patch.object(api, "bot") as bot:
+        apply_profile.run(conn.id)
+        apply_profile.run(conn.id)  # nothing changed: no second call
+    path = f"/guilds/{GUILD}/members/@me"
+    assert [c.args[:2] for c in bot.call_args_list] == [("PATCH", path)] * 2
+    assert bot.call_args_list[0].args[2] == {"nick": "FC Example"}
+    second = bot.call_args_list[1].args[2]
+    assert second["avatar"] == PNG
+    assert second["bio"] == "Der Hubra-Bot von FC Example."
+    event = db.session.query(ConnectedAppEvent).filter_by(action="profile").one()
+    assert event.ok
+
+    _brand(db, tenant, club_name="FC Renamed", logo=PNG)
+    with patch.object(api, "bot") as bot:
+        apply_profile.run(conn.id)
+    assert bot.call_args_list[0].args[2] == {"nick": "FC Renamed"}
+
+
+def test_svg_logo_is_left_out_of_the_avatar(app, db, tenant):
+    from hubra_discord.profile import desired
+
+    svg = "data:image/svg+xml;base64,PHN2Zy8+"
+    _brand(db, tenant, logo=svg)
+    conn = _conn(db, tenant)
+    assert desired(conn, tenant)["avatar"] is None
+    assert desired(conn, tenant)["nick"] == "Club A"
+
+
+def test_profile_off_resets_to_the_app(app, db, tenant):
+    from hubra_discord.tasks import apply_profile
+
+    conn = _conn(db, tenant, club_profile=False)
+    with patch.object(api, "bot") as bot:
+        apply_profile.run(conn.id)
+    assert bot.call_args_list[0].args[2] == {"nick": None}
+    assert bot.call_args_list[1].args[2] == {"avatar": None, "bio": None}
+
+
+def test_missing_nickname_permission_still_sets_the_logo(app, db, tenant):
+    from hubra_discord.tasks import apply_profile
+
+    conn = _conn(db, tenant)
+    calls = []
+
+    def fake(method, path, body=None, **_):
+        calls.append(body)
+        if "nick" in body:
+            raise DiscordError("Missing Permissions", 403)
+
+    with patch.object(api, "bot", side_effect=fake):
+        apply_profile.run(conn.id)
+    assert len(calls) == 2  # the avatar and bio went on
+    db.session.refresh(conn)
+    assert "Change Nickname" in conn.last_error
+    assert "profile_applied" not in (conn.config or {})  # tried again tomorrow
+
+
+def test_saving_the_look_queues_the_profile(client, db, club_auth, tenant):
+    conn = _conn(db, tenant)
+    with patch("hubra_discord.tasks.apply_profile.delay") as queued:
+        resp = client.patch(
+            f"/api/v1/apps/connections/{conn.id}",
+            json={"config": {"club_profile": False, "club_embeds": False}},
+            headers=H,
+        )
+    assert resp.status_code == 200, resp.get_json()
+    queued.assert_called_once_with(conn.id)
+    db.session.refresh(conn)
+    assert conn.config["club_profile"] is False
+    assert conn.config["club_embeds"] is False
+
+
+def test_nightly_run_refreshes_the_profile(app, db, tenant):
+    from hubra_discord.tasks import sync_all_clubs
+
+    conn = _conn(db, tenant)
+    with (
+        patch("hubra_discord.tasks.sync_connection.delay"),
+        patch("hubra_discord.tasks.sync_events.delay") as events,
+        patch("hubra_discord.tasks.apply_profile.delay") as profile,
+    ):
+        sync_all_clubs.run()
+    profile.assert_called_once_with(conn.id)
+    events.assert_called_once_with(conn.id)
+
+
+# ── Direct messages (notifications) ──────────────────────────────────────────
+
+
+class FakeDiscord:
+    """Records calls; answers DM channels, messages, events, roles, channels."""
+
+    def __init__(self, fail_dm=None):
+        self.calls = []
+        self.fail_dm = fail_dm
+        self.next_id = 5000
+
+    def _id(self):
+        self.next_id += 1
+        return str(self.next_id)
+
+    def __call__(self, method, path, body=None, **kw):
+        self.calls.append((method, path, body))
+        if path == "/users/@me/channels":
+            if self.fail_dm:
+                raise DiscordError("Cannot send messages to this user", self.fail_dm)
+            return {"id": "dm-1"}
+        if path.endswith("/messages"):
+            return {"id": self._id()}
+        if path.endswith("/scheduled-events") and method == "POST":
+            return {"id": self._id()}
+        if "/scheduled-events/" in path:
+            return {}
+        if path.endswith("/roles") and method == "POST":
+            return {"id": self._id()}
+        if path.endswith("/channels") and method == "POST":
+            return {"id": self._id()}
+        if path.startswith("/channels/") and method == "GET":
+            return {"id": path.rsplit("/", 1)[1]}
+        return _server(method, path, body)
+
+    def sent(self, path_end):
+        return [b for m, p, b in self.calls if p.endswith(path_end) and m == "POST"]
+
+
+def test_notification_goes_out_as_a_direct_message(app, db, tenant, trainer, seeded_db):
+    from hubra.api.notifications.services import notify_member
+    from hubra.core.tenant.context import in_club
+
+    from hubra.core.tasks.connected_app_tasks import deliver_app_notification
+
+    _conn(db, tenant, scopes=("notify",))
+    admin = seeded_db["admin"]
+    fake = FakeDiscord()
+    queued = []
+    with in_club(tenant):
+        admin.notify_prefs = {"posts": {"discord": True}}
+        db.session.commit()
+        with (
+            patch.object(api, "bot", side_effect=fake),
+            # Run the task here after the commit (eager Celery would open
+            # its own app).
+            patch.object(
+                deliver_app_notification,
+                "delay",
+                side_effect=lambda *a: queued.append(a),
+            ),
+        ):
+            notify_member(
+                admin.id, "info", "New post", "Hello club", link="/app/x", topic="posts"
+            )
+            db.session.commit()
+            for args in queued:
+                deliver_app_notification.run(*args)
+    (dm,) = fake.sent("/users/@me/channels")
+    assert dm == {"recipient_id": "42"}
+    (msg,) = fake.sent("/channels/dm-1/messages")
+    embed = msg["embeds"][0]
+    assert embed["title"] and embed["description"] == "Hello club"
+    assert embed["author"]["name"] == "Club A"  # the club, as DMs come from "Hubra"
+
+
+def test_no_direct_message_unless_the_member_asked(app, db, tenant, trainer, seeded_db):
+    from hubra.api.notifications.services import notify_member
+    from hubra.core.tenant.context import in_club
+
+    _conn(db, tenant, scopes=("notify",))
+    fake = FakeDiscord()
+    with in_club(tenant), patch.object(api, "bot", side_effect=fake):
+        notify_member(seeded_db["admin"].id, "info", "New post", "x", topic="posts")
+        db.session.commit()
+    assert fake.calls == []
+
+
+def test_notification_choices_list_discord_when_linked(
+    client, db, club_auth, tenant, trainer
+):
+    _conn(db, tenant, scopes=("notify",))
+    data = client.get("/api/v1/members/me/notifications", headers=H).get_json()
+    assert data["apps"] == [{"key": "discord", "name": "Discord"}]
+    assert data["topics"]["posts"]["discord"] is False
+    resp = client.put(
+        "/api/v1/members/me/notifications",
+        json={"posts": {"discord": True}},
+        headers=H,
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["topics"]["posts"]["discord"] is True
+
+
+def test_closed_direct_messages_are_not_an_error(app, db, tenant, trainer):
+    from hubra.core.tenant.context import in_club
+
+    conn = _conn(db, tenant, scopes=("notify",))
+    with (
+        in_club(tenant),
+        patch.object(api, "bot", side_effect=FakeDiscord(fail_dm=403)),
+    ):
+        assert handler.deliver_notification(conn, "42", {"title": "x"}) is False
+
+
+# ── Discord events ───────────────────────────────────────────────────────────
+
+
+def test_events_follow_the_club(app, db, tenant):
+    from hubra.core.models.event import ClubEvent
+    from hubra.core.tenant.context import in_club
+    from hubra_discord.tasks import sync_events
+
+    conn = _conn(db, tenant, scopes=("events",))
+    soon = date.today() + timedelta(days=5)
+    with in_club(tenant):
+        public = ClubEvent(
+            title="Open day",
+            date=soon,
+            time="14:00-17:00",
+            type="Social",
+            is_public=True,
+            location="Hall",
+        )
+        private = ClubEvent(title="Board", date=soon, type="Meeting", is_public=False)
+        db.session.add_all([public, private])
+        db.session.commit()
+        public_id = public.id
+    fake = FakeDiscord()
+    with patch.object(api, "bot", side_effect=fake):
+        assert sync_events.run(conn.id) == {"created": 1, "changed": 0, "deleted": 0}
+        (created,) = fake.sent("/scheduled-events")
+        assert created["name"] == "Open day"
+        assert created["entity_type"] == 3
+        assert created["entity_metadata"] == {"location": "Hall"}
+        assert created["scheduled_start_time"].startswith(soon.isoformat())
+        # Nothing changed: Discord isn't called again.
+        assert sync_events.run(conn.id) == {"created": 0, "changed": 0, "deleted": 0}
+        with in_club(tenant):
+            db.session.get(ClubEvent, public_id).title = "Open day!"
+            db.session.commit()
+        assert sync_events.run(conn.id)["changed"] == 1
+        with in_club(tenant):
+            db.session.delete(db.session.get(ClubEvent, public_id))
+            db.session.commit()
+        assert sync_events.run(conn.id)["deleted"] == 1
+    db.session.refresh(conn)
+    assert conn.config["scheduled_events"] == {}
+
+
+def test_changing_an_event_queues_the_sync(client, db, club_auth, tenant):
+    from hubra.core.models.event import ClubEvent
+
+    conn = _conn(db, tenant, scopes=("events",))
+    event = ClubEvent(
+        title="Fest",
+        date=date.today() + timedelta(days=9),
+        type="Social",
+        is_public=True,
+    )
+    db.session.add(event)
+    db.session.commit()
+    with patch("hubra_discord.tasks.sync_events.delay") as queued:
+        resp = client.patch(
+            f"/api/v1/events/{event.id}", json={"title": "Fest 2"}, headers=H
+        )
+    assert resp.status_code == 200, resp.get_json()
+    queued.assert_called_once_with(conn.id)
+
+
+# ── Group channels ───────────────────────────────────────────────────────────
+
+
+def test_group_channel_is_made_private(client, db, club_auth, tenant, trainer):
+    conn = _conn(db, tenant, scopes=("channels",))
+    fake = FakeDiscord()
+    with (
+        patch.object(api, "bot", side_effect=fake),
+        patch("hubra_discord.tasks.sync_connection.delay") as sync,
+    ):
+        resp = client.patch(
+            f"/api/v1/apps/connections/{conn.id}",
+            json={"config": {"group_channels": [trainer.id]}},
+            headers=H,
+        )
+    assert resp.status_code == 200, resp.get_json()
+    (role,) = fake.sent(f"/guilds/{GUILD}/roles")
+    assert role["name"] == "Trainer"
+    (channel,) = fake.sent(f"/guilds/{GUILD}/channels")
+    assert channel["name"] == "trainer"
+    overwrites = {o["id"]: o for o in channel["permission_overwrites"]}
+    assert int(overwrites[GUILD]["deny"]) & api.VIEW_CHANNEL
+    assert APP_ID in overwrites
+    sync.assert_called_once_with(conn.id)
+    db.session.refresh(conn)
+    (entry,) = conn.config["group_channels"]
+    assert entry["group_id"] == trainer.id
+
+    # Role sync now covers the channel's role.
+    from hubra_discord.roles import managed_map
+
+    assert managed_map(conn) == [
+        {"source": f"group:{trainer.id}", "role_id": entry["role_id"]}
+    ]
+
+
+def test_group_event_goes_to_its_channel(client, db, club_auth, tenant, trainer):
+    conn = _conn(
+        db,
+        tenant,
+        scopes=("announce", "channels"),
+        group_channels=[
+            {"group_id": trainer.id, "channel_id": "777", "role_id": "778"}
+        ],
+    )
+    with (
+        patch("hubra_discord.tasks.send_to_group_channel.delay") as group,
+        patch("hubra_discord.tasks.send_announcement.delay") as main,
+    ):
+        resp = client.post(
+            "/api/v1/events",
+            json={
+                "title": "Team training",
+                "date": (date.today() + timedelta(days=3)).isoformat(),
+                "type": "Social",
+                "group_id": trainer.id,
+            },
+            headers=H,
+        )
+    assert resp.status_code == 201, resp.get_json()
+    group.assert_called_once()
+    assert group.call_args.args[:2] == (conn.id, trainer.id)
+    main.assert_not_called()
+
+
+# ── Poll buttons ─────────────────────────────────────────────────────────────
+
+
+def _poll(db, tenant, labels=("Ja", "Nein")):
+    from hubra.core.models.poll import Poll, PollOption
+
+    poll = Poll(question="Grillfest?", options=[PollOption(label=x) for x in labels])
+    db.session.add(poll)
+    db.session.commit()
+    return poll
+
+
+def test_vote_with_a_button(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.poll import PollVote
+
+    _conn(db, tenant)
+    poll = _poll(db, tenant)
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"vote:{poll.id}:1"},
+    }
+    data = _signed(client, click).get_json()["data"]
+    assert "Nein" in data["content"] and data["flags"] == 64
+    vote = db.session.query(PollVote).filter_by(poll_id=poll.id).one()
+    assert vote.member_id == seeded_db["admin"].id
+    # The activity list never says who voted for what.
+    detail = db.session.query(ConnectedAppEvent).filter_by(action="voted").one().detail
+    assert detail == f"#{poll.id}"
+
+
+def test_poll_buttons(app, db, tenant):
+    from hubra_discord.polls import buttons
+
+    poll = _poll(db, tenant, labels=[f"Option {i}" for i in range(7)])
+    rows = buttons(poll)
+    assert [len(r["components"]) for r in rows] == [5, 2]
+    assert rows[1]["components"][1]["custom_id"] == f"vote:{poll.id}:6"
+    assert buttons(_poll(db, tenant, labels=[str(i) for i in range(26)])) is None
+
+
+def test_group_poll_is_not_voted_by_others(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.group import Group
+
+    _conn(db, tenant)
+    other = Group(name="Vorstand")
+    db.session.add(other)
+    db.session.commit()
+    poll = _poll(db, tenant)
+    poll.required_group_ids = [other.id]
+    db.session.commit()
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"vote:{poll.id}:0"},
+    }
+    assert "nur für" in _signed(client, click).get_json()["data"]["content"]
+
+
+# ── Personal commands ────────────────────────────────────────────────────────
+
+
+def test_invoices_command(client, db, tenant, trainer, seeded_db):
+    from decimal import Decimal
+
+    from hubra.core.models.finance import Invoice
+
+    _conn(db, tenant)
+    db.session.add(
+        Invoice(
+            member_id=seeded_db["admin"].id,
+            issued=date.today(),
+            due=date.today() - timedelta(days=1),
+            amount=Decimal("1250.00"),
+            status="Open",
+        )
+    )
+    db.session.commit()
+    text = _signed(client, _command("rechnungen")).get_json()["data"]["content"]
+    assert "1'250.00" in text and "überfällig" in text
+    stranger = _signed(client, _command("rechnungen", user="999")).get_json()
+    assert "Verknüpfe" in stranger["data"]["content"]
+
+
+def test_profile_command(client, db, tenant, trainer, seeded_db):
+    _conn(db, tenant)
+    text = _signed(client, _command("profil")).get_json()["data"]["content"]
+    assert seeded_db["admin"].name in text and "Trainer" in text
+
+
+def test_trainings_check_in(client, db, tenant, trainer, seeded_db):
+    from datetime import datetime as dt
+
+    from hubra.core.models.event import ClubEvent, EventAttendance
+    from hubra.core.tasks.reminder_tasks import club_zone
+    from hubra.core.tenant.context import in_club
+
+    _conn(db, tenant)
+    with in_club(tenant):
+        now = dt.now(club_zone())
+    start = (now + timedelta(minutes=30)).strftime("%H:%M")
+    if (now + timedelta(minutes=30)).date() != now.date():
+        pytest.skip("too close to midnight")
+    event = ClubEvent(
+        title="Abendtraining",
+        date=now.date(),
+        time=start,
+        type="Training",
+        category="training",
+        group_id=trainer.id,
+    )
+    db.session.add(event)
+    db.session.commit()
+    data = _signed(client, _command("trainings")).get_json()["data"]
+    assert "Abendtraining" in data["content"]
+    ids = [b["custom_id"] for row in data["components"] for b in row["components"]]
+    assert f"attend:{event.id}:present" in ids
+    assert f"attend:{event.id}:excused" in ids
+
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"attend:{event.id}:present"},
+    }
+    assert "Eingecheckt" in _signed(client, click).get_json()["data"]["content"]
+    row = db.session.query(EventAttendance).filter_by(event_id=event.id).one()
+    assert (row.member_id, row.status) == (seeded_db["admin"].id, "present")
+
+
+def test_check_in_can_be_turned_off(client, db, tenant, trainer):
+    _conn(db, tenant, self_checkin=False)
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": "attend:1:present"},
+    }
+    assert "ausgeschaltet" in _signed(client, click).get_json()["data"]["content"]
+
+
+def test_commands_include_the_personal_ones():
+    from hubra_discord.commands import all_commands
+
+    names = {c["name"] for c in all_commands()}
+    assert {
+        "events",
+        "verbinden",
+        "hubra",
+        "rechnungen",
+        "trainings",
+        "profil",
+    } <= names
+
+
+# ── Permissions for scopes turned on later ───────────────────────────────────
+
+
+def test_options_name_missing_permissions_and_a_grant_link(
+    client, db, club_auth, tenant
+):
+    conn = _conn(db, tenant, scopes=("announce", "events"))
+
+    def server(method, path, body=None, **_):
+        if path.endswith("/roles"):
+            return [
+                {"id": GUILD, "name": "@everyone", "position": 0, "permissions": "0"},
+                {
+                    "id": "950",
+                    "name": "Hubra",
+                    "position": 5,
+                    "managed": True,
+                    "permissions": str(
+                        api.VIEW_CHANNEL | api.SEND_MESSAGES | api.EMBED_LINKS
+                    ),
+                },
+            ]
+        return _server(method, path, body)
+
+    with patch.object(api, "bot", side_effect=server):
+        data = client.get(
+            f"/api/v1/apps/connections/{conn.id}/options", headers=H
+        ).get_json()
+    assert data["missingPermissions"] == ["Change Nickname", "Create Events"]
+    query = parse_qs(urlparse(data["grantUrl"]).query)
+    assert query["guild_id"] == [GUILD]
+    assert int(query["permissions"][0]) & api.CREATE_EVENTS
+
+
+# ── Gateway (someone joined the server) ──────────────────────────────────────
+
+
+def test_websocket_frames_round_trip():
+    from hubra_discord.gateway import encode_frame, read_frame
+
+    for size in (5, 300, 70000):
+        payload = b"x" * size
+        frame = encode_frame(payload, mask=b"abcd")
+        buf = bytearray(frame)
+
+        def read(n):
+            out = bytes(buf[:n])
+            del buf[:n]
+            return out
+
+        assert read_frame(read) == (True, 1, payload)
+
+
+def test_gateway_hands_joins_to_the_worker():
+    from hubra_discord.gateway import on_dispatch
+
+    with patch("hubra_discord.tasks.member_joined.delay") as queued:
+        on_dispatch("GUILD_MEMBER_ADD", {"guild_id": GUILD, "user": {"id": "77"}})
+        on_dispatch(
+            "GUILD_MEMBER_ADD", {"guild_id": GUILD, "user": {"id": "78", "bot": True}}
+        )
+        on_dispatch("MESSAGE_CREATE", {"guild_id": GUILD})
+    queued.assert_called_once_with(GUILD, "77")
+
+
+def test_gateway_session_resumes_and_reconnects():
+    from hubra_discord.gateway import Closed, Session
+
+    session = Session("t")
+    session.handle(
+        None,
+        {
+            "op": 0,
+            "t": "READY",
+            "s": 1,
+            "d": {"session_id": "s", "resume_gateway_url": "wss://r"},
+        },
+    )
+    assert (session.session_id, session.seq, session.resume_url) == ("s", 1, "wss://r")
+    session.acked = False
+    session.handle(None, {"op": 11})
+    assert session.acked
+    with pytest.raises(Closed):
+        session.handle(None, {"op": 7})
+
+
+def test_newcomer_gets_the_welcome(app, db, tenant):
+    from hubra_discord.tasks import member_joined
+
+    conn = _conn(
+        db,
+        tenant,
+        scopes=("notify",),
+        welcome_dm=True,
+        welcome_text="Hallo bei {club}!",
+    )
+    fake = FakeDiscord()
+    with patch.object(api, "bot", side_effect=fake):
+        assert member_joined.run(GUILD, "555") == "welcome sent"
+    (dm,) = fake.sent("/users/@me/channels")
+    assert dm == {"recipient_id": "555"}
+    (msg,) = fake.sent("/channels/dm-1/messages")
+    assert msg["content"] == "Hallo bei Club A!"
+    db.session.refresh(conn)
+
+
+def test_no_welcome_unless_turned_on(app, db, tenant):
+    from hubra_discord.tasks import member_joined
+
+    _conn(db, tenant, scopes=("notify",))
+    fake = FakeDiscord()
+    with patch.object(api, "bot", side_effect=fake):
+        assert member_joined.run(GUILD, "555") == ""
+    assert fake.calls == []
+
+
+def test_linked_member_joining_gets_roles(app, db, tenant, trainer, seeded_db):
+    from hubra_discord.tasks import member_joined
+
+    _mapped(db, tenant, trainer)
+    server = FakeServer()
+    with patch.object(api, "bot", side_effect=server):
+        done = member_joined.run(GUILD, "42")
+    assert "+Trainer" in done

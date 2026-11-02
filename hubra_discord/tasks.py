@@ -21,15 +21,20 @@ _log = logging.getLogger(__name__)
 
 
 @contextmanager
-def _connection(connection_id: int, scope: str):
-    """The live connection, inside its club; None when it's gone or lacks
-    *scope*."""
+def _connection(connection_id: int, scope: str | tuple[str, ...]):
+    """The live connection, inside its club; None when it's gone or has
+    none of *scope*."""
     from hubra.core.models.connected_app import ConnectedApp
     from hubra.core.models.tenant import Tenant
     from hubra.core.tenant.context import in_club
 
+    scopes = (scope,) if isinstance(scope, str) else scope
     conn = db.session.get(ConnectedApp, connection_id)
-    if conn is None or conn.status != "active" or not apps.has_scope(conn, scope):
+    if (
+        conn is None
+        or conn.status != "active"
+        or not any(apps.has_scope(conn, s) for s in scopes)
+    ):
         yield None
         return
     tenant = db.session.get(Tenant, conn.tenant_id)
@@ -64,8 +69,12 @@ def send_announcement(
         channel = channel_for(conn.config or {}, kind or "")
         if not channel:
             return
+        from hubra.core.tenant.context import current_tenant
+
+        from .profile import brand
+
         try:
-            api.send(channel, body)
+            api.send(channel, brand(body, current_tenant(), conn.config or {}))
         except DiscordError as exc:
             if not exc.retryable:  # no access, channel gone: retrying won't help
                 _failed(conn, "announced", exc)
@@ -78,7 +87,7 @@ def send_announcement(
 
 
 def _role_task(self, connection_id: int, action, *args):
-    with _connection(connection_id, "roles") as conn:
+    with _connection(connection_id, ("roles", "channels")) as conn:
         if conn is None:
             return None
         try:
@@ -142,7 +151,41 @@ def sync_all_clubs() -> int:
     ).all()
     for connection_id in ids:
         sync_connection.delay(connection_id)
+        apply_profile.delay(connection_id)
+        sync_events.delay(connection_id)
     return len(ids)
+
+
+@celery_app.task(name="hubra_discord.tasks.apply_profile", bind=True, max_retries=3)
+def apply_profile(self, connection_id: int, force: bool = False) -> None:
+    """The bot's nickname, avatar and bio on this club's server."""
+    from hubra.core.models.connected_app import ConnectedApp
+    from hubra.core.models.tenant import Tenant
+    from hubra.core.tenant.context import in_club
+
+    from .profile import apply
+
+    conn = db.session.get(ConnectedApp, connection_id)
+    if conn is None or conn.status != "active":
+        return
+    tenant = db.session.get(Tenant, conn.tenant_id)
+    if tenant is None or tenant.status != "active":
+        return
+    with in_club(tenant):
+        try:
+            problems = apply(conn, tenant, force=force)
+        except DiscordError as exc:
+            if not exc.retryable:
+                _failed(conn, "profile", exc)
+                return
+            raise self.retry(exc=exc, countdown=exc.retry_after or 60) from exc
+        if problems is None:
+            return  # nothing changed
+        if problems:
+            apps.record(conn, "profile", False, "; ".join(problems)[:500])
+        else:
+            apps.record(conn, "profile", True, "Club look applied")
+        db.session.commit()
 
 
 @celery_app.task(name="hubra_discord.tasks.register_commands", bind=True, max_retries=5)
@@ -157,3 +200,94 @@ def register_commands(self) -> None:
             _log.warning("discord: could not register commands: %s", exc)
             return
         raise self.retry(exc=exc, countdown=exc.retry_after or 30) from exc
+
+
+@celery_app.task(
+    name="hubra_discord.tasks.send_to_group_channel",
+    bind=True,
+    max_retries=5,
+    acks_late=True,
+)
+def send_to_group_channel(self, connection_id: int, group_id: int, body: dict) -> None:
+    """Post in a group's private channel (its events, polls, reminders)."""
+    from .groups import channel_for_group
+
+    with _connection(connection_id, "channels") as conn:
+        if conn is None:
+            return
+        channel = channel_for_group(conn, group_id)
+        if not channel:
+            return
+        from hubra.core.tenant.context import current_tenant
+
+        from .profile import brand
+
+        try:
+            api.send(channel, brand(body, current_tenant(), conn.config or {}))
+        except DiscordError as exc:
+            if not exc.retryable:
+                _failed(conn, "announced", exc)
+                return
+            countdown = exc.retry_after or 2 ** (self.request.retries + 2)
+            raise self.retry(exc=exc, countdown=countdown) from exc
+        title = (body.get("embeds") or [{}])[0].get("title", "")
+        apps.record(conn, "announced", True, title)
+        db.session.commit()
+
+
+@celery_app.task(name="hubra_discord.tasks.sync_events", bind=True, max_retries=3)
+def sync_events(self, connection_id: int) -> dict | None:
+    """The club's events as the server's scheduled events."""
+    from .scheduled import sync
+
+    with _connection(connection_id, "events") as conn:
+        if conn is None:
+            return None
+        try:
+            counts = sync(conn)
+        except DiscordError as exc:
+            db.session.commit()  # keep what was done
+            if not exc.retryable:
+                _failed(conn, "events", exc)
+                return None
+            raise self.retry(exc=exc, countdown=exc.retry_after or 60) from exc
+        if any(counts.values()):
+            apps.record(
+                conn,
+                "events",
+                True,
+                ", ".join(f"{n} {k}" for k, n in counts.items() if n),
+            )
+        db.session.commit()
+        return counts
+
+
+@celery_app.task(name="hubra_discord.tasks.member_joined", bind=True, max_retries=3)
+def member_joined(self, guild_id: str, user_id: str) -> str:
+    """From the gateway: someone joined a server (welcome, roles)."""
+    from hubra.core.models.tenant import Tenant
+    from hubra.core.modules import is_enabled
+    from hubra.core.tenant.context import in_club
+
+    from .notify import member_joined as handle
+
+    conn = apps.active("discord", guild_id)
+    if conn is None:
+        return ""
+    tenant = db.session.get(Tenant, conn.tenant_id)
+    if tenant is None or tenant.status != "active":
+        return ""
+    with in_club(tenant):
+        if not is_enabled("discord"):
+            return ""
+        try:
+            done = handle(conn, user_id)
+        except DiscordError as exc:
+            if not exc.retryable:
+                _failed(conn, "joined", exc)
+                return ""
+            raise self.retry(exc=exc, countdown=exc.retry_after or 30) from exc
+        if done:
+            apps.record(conn, "joined", True, done[:500])
+        db.session.commit()
+        return done

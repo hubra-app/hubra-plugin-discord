@@ -38,7 +38,9 @@ def after_commit(fn, *args) -> None:
         sa_event.listen(session, "after_commit", _run_pending)
         sa_event.listen(session, "after_soft_rollback", _drop_pending)
         session.info["discord_listening"] = True
-    session.info.setdefault("discord_pending", []).append((fn, args))
+    pending = session.info.setdefault("discord_pending", [])
+    if (fn, args) not in pending:  # a series change asks once per date
+        pending.append((fn, args))
 
 
 def _run_pending(session) -> None:
@@ -83,20 +85,64 @@ def _announce(tenant_id, kind: str, toggle: str, build) -> None:
         after_commit(send_announcement.delay, conn.id, body, kind)
 
 
+def _to_groups(tenant_id, group_ids, build) -> None:
+    """Post in the private channels of these groups (``channels`` scope)."""
+    from .groups import channel_for_group
+    from .tasks import send_to_group_channel
+
+    for conn in _connections(tenant_id, "channels"):
+        if not (conn.config or {}).get("group_announce", True):
+            continue
+        for gid in group_ids or ():
+            if not channel_for_group(conn, gid):
+                continue
+            item, components = build(conn)
+            body = payload(None, [item], components)
+            after_commit(send_to_group_channel.delay, conn.id, int(gid), body)
+
+
+def _has_group_channel(tenant_id, group_id) -> bool:
+    from .groups import channel_for_group
+
+    return group_id is not None and any(
+        channel_for_group(c, group_id) for c in _connections(tenant_id, "channels")
+    )
+
+
+def _sync_events_later(tenant_id) -> None:
+    from .tasks import sync_events
+
+    for conn in _connections(tenant_id, "events"):
+        after_commit(sync_events.delay, conn.id)
+
+
 def on_event_published(tenant_id=None, event_id=None, **_):
     from hubra.core.models.event import ClubEvent
 
     event = db.session.get(ClubEvent, event_id)
     if event is None:
         return
+    _sync_events_later(tenant_id)
+
+    def buttons_for(conn):
+        return event_buttons(event) if apps.has_scope(conn, "commands") else None
+
+    if _has_group_channel(tenant_id, event.group_id):
+        _to_groups(
+            tenant_id, [event.group_id], lambda c: (event_embed(event), buttons_for(c))
+        )
+        return  # a group's event goes to its channel, not the whole server
 
     def build(conn):
         if not _members_only_ok(event, conn):
             return None
-        buttons = event_buttons(event) if apps.has_scope(conn, "commands") else None
-        return event_embed(event), buttons
+        return event_embed(event), buttons_for(conn)
 
     _announce(tenant_id, "events", "announce_events", build)
+
+
+def on_event_changed(tenant_id=None, event_id=None, **_):
+    _sync_events_later(tenant_id)
 
 
 def on_post_published(tenant_id=None, post_id=None, **_):
@@ -107,13 +153,41 @@ def on_post_published(tenant_id=None, post_id=None, **_):
         _announce(tenant_id, "posts", "announce_posts", lambda _conn: post_embed(post))
 
 
+def _poll_buttons(conn, poll):
+    from .polls import buttons
+
+    config = conn.config or {}
+    if not apps.has_scope(conn, "commands") or not config.get("poll_buttons", True):
+        return None
+    return buttons(poll)
+
+
 def on_poll_published(tenant_id=None, poll_id=None, **_):
     from hubra.core.models.poll import Poll
 
     poll = db.session.get(Poll, poll_id)
-    if poll is None or poll.required_group_ids or poll.required_function_ids:
-        return  # a poll for some groups only isn't for the whole server
-    _announce(tenant_id, "polls", "announce_polls", lambda _conn: poll_embed(poll))
+    if poll is None:
+        return
+    if poll.required_group_ids or poll.required_function_ids:
+        # Only for some: their group channels, never the whole server.
+        _to_groups(
+            tenant_id,
+            poll.required_group_ids,
+            lambda c: (
+                poll_embed(poll, _poll_buttons(c, poll) is not None),
+                _poll_buttons(c, poll),
+            ),
+        )
+        return
+    _announce(
+        tenant_id,
+        "polls",
+        "announce_polls",
+        lambda c: (
+            poll_embed(poll, _poll_buttons(c, poll) is not None),
+            _poll_buttons(c, poll),
+        ),
+    )
 
 
 def _members_only_ok(event, conn) -> bool:
@@ -128,11 +202,21 @@ def on_event_reminder(tenant_id=None, event_id=None, **_):
     if event is None:
         return
 
+    def buttons_for(conn):
+        return event_buttons(event) if apps.has_scope(conn, "commands") else None
+
+    if _has_group_channel(tenant_id, event.group_id):
+        _to_groups(
+            tenant_id,
+            [event.group_id],
+            lambda c: (event_reminder_embed(event), buttons_for(c)),
+        )
+        return
+
     def build(conn):
         if not _members_only_ok(event, conn):
             return None
-        buttons = event_buttons(event) if apps.has_scope(conn, "commands") else None
-        return event_reminder_embed(event), buttons
+        return event_reminder_embed(event), buttons_for(conn)
 
     _announce(tenant_id, "reminders", "announce_reminders", build)
 
@@ -141,25 +225,43 @@ def on_poll_closing(tenant_id=None, poll_id=None, **_):
     from hubra.core.models.poll import Poll
 
     poll = db.session.get(Poll, poll_id)
-    if poll is None or poll.required_group_ids or poll.required_function_ids:
+    if poll is None:
+        return
+    if poll.required_group_ids or poll.required_function_ids:
+        _to_groups(
+            tenant_id,
+            poll.required_group_ids,
+            lambda c: (poll_closing_embed(poll), _poll_buttons(c, poll)),
+        )
         return
     _announce(
         tenant_id,
         "reminders",
         "announce_reminders",
-        lambda _c: poll_closing_embed(poll),
+        lambda c: (poll_closing_embed(poll), _poll_buttons(c, poll)),
     )
 
 
 # ── Roles ────────────────────────────────────────────────────────────────────
 
 
+def _role_connections(tenant_id):
+    from .roles import managed_map
+
+    seen, out = set(), []
+    for scope in ("roles", "channels"):
+        for conn in _connections(tenant_id, scope):
+            if conn.id not in seen and managed_map(conn):
+                seen.add(conn.id)
+                out.append(conn)
+    return out
+
+
 def _sync_member_later(tenant_id, member_id) -> None:
     from .tasks import sync_member
 
-    for conn in _connections(tenant_id, "roles"):
-        if (conn.config or {}).get("role_map"):
-            after_commit(sync_member.delay, conn.id, member_id)
+    for conn in _role_connections(tenant_id):
+        after_commit(sync_member.delay, conn.id, member_id)
 
 
 def on_group_membership_changed(tenant_id=None, member_id=None, **_):
@@ -177,6 +279,5 @@ def on_account_unlinked(tenant_id=None, provider=None, external_id=None, **_):
 
     if provider != "discord" or not external_id:
         return
-    for conn in _connections(tenant_id, "roles"):
-        if (conn.config or {}).get("role_map"):
-            after_commit(remove_roles.delay, conn.id, external_id)
+    for conn in _role_connections(tenant_id):
+        after_commit(remove_roles.delay, conn.id, external_id)

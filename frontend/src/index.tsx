@@ -1,5 +1,17 @@
 import { useEffect, useState } from 'react'
-import { ActionIcon, Alert, Button, Group, Select, Stack, Switch, Text } from '@mantine/core'
+import {
+  ActionIcon,
+  Alert,
+  Anchor,
+  Button,
+  Group,
+  MultiSelect,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  Textarea,
+} from '@mantine/core'
 import { useQuery } from '@tanstack/react-query'
 import {
   getConnectionOptions,
@@ -15,6 +27,15 @@ interface Options {
   channels: { id: string; name: string }[]
   roles: { id: string; name: string; assignable: boolean }[]
   sources: { key: string; label: string; kind: string }[]
+  missingPermissions?: string[]
+  grantUrl?: string
+}
+
+interface GroupChannel {
+  group_id: number
+  channel_id: string
+  role_id: string
+  name: string
 }
 
 interface RoleMapping {
@@ -34,7 +55,18 @@ interface DiscordConfig {
   members_only_events: boolean
   mention: string
   role_map: RoleMapping[]
+  club_profile: boolean
+  club_embeds: boolean
+  poll_buttons: boolean
+  discord_events: boolean
+  group_channels: GroupChannel[]
+  group_announce: boolean
+  welcome_dm: boolean
+  welcome_text: string
+  self_checkin: boolean
 }
+
+const MAX_WELCOME = 1500
 
 const KINDS: {
   kind: Kind
@@ -65,6 +97,15 @@ function readConfig(c: Connection): DiscordConfig {
     members_only_events: raw.members_only_events ?? false,
     mention: raw.mention ?? '',
     role_map: raw.role_map ?? [],
+    club_profile: raw.club_profile ?? true,
+    club_embeds: raw.club_embeds ?? true,
+    poll_buttons: raw.poll_buttons ?? true,
+    discord_events: raw.discord_events ?? true,
+    group_channels: raw.group_channels ?? [],
+    group_announce: raw.group_announce ?? true,
+    welcome_dm: raw.welcome_dm ?? false,
+    welcome_text: raw.welcome_text ?? '',
+    self_checkin: raw.self_checkin ?? true,
   }
 }
 
@@ -73,8 +114,15 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const { t } = useT()
   const { notify } = useToast()
   const [config, setConfig] = useState(() => readConfig(connection))
+  const [groupIds, setGroupIds] = useState<string[]>(() =>
+    readConfig(connection).group_channels.map((g) => String(g.group_id)),
+  )
   const [busy, setBusy] = useState(false)
-  useEffect(() => setConfig(readConfig(connection)), [connection])
+  useEffect(() => {
+    const next = readConfig(connection)
+    setConfig(next)
+    setGroupIds(next.group_channels.map((g) => String(g.group_id)))
+  }, [connection])
 
   const options = useQuery({
     queryKey: ['discord-options', connection.id],
@@ -92,6 +140,17 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
 
   const announce = connection.scopes.includes('announce')
   const roles = connection.scopes.includes('roles')
+  const commands = connection.scopes.includes('commands')
+  const events = connection.scopes.includes('events')
+  const channels = connection.scopes.includes('channels')
+  const dms = connection.scopes.includes('notify')
+  const missing = options.data.missingPermissions ?? []
+  const savedGroups = config.group_channels.map((g) => String(g.group_id))
+  const groupsChanged =
+    groupIds.length !== savedGroups.length || groupIds.some((g, i) => g !== savedGroups[i])
+  const groupData = options.data.sources
+    .filter((s) => s.kind === 'group')
+    .map((s) => ({ value: s.key.slice('group:'.length), label: s.label }))
   const set = (patch: Partial<DiscordConfig>) => setConfig((c) => ({ ...c, ...patch }))
   const channelData = options.data.channels.map((c) => ({ value: c.id, label: `#${c.name}` }))
   const roleName = (id: string) => options.data.roles.find((r) => r.id === id)?.name ?? id
@@ -99,7 +158,10 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const save = async () => {
     setBusy(true)
     try {
-      const sent: Partial<DiscordConfig> = {}
+      const sent: Partial<DiscordConfig> = {
+        club_profile: config.club_profile,
+        club_embeds: config.club_embeds,
+      }
       if (announce) {
         Object.assign(sent, {
           channel_id: config.channel_id,
@@ -113,6 +175,20 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
         })
       }
       if (roles) sent.role_map = config.role_map.filter((m) => m.source && m.role_id)
+      if (commands) {
+        sent.poll_buttons = config.poll_buttons
+        sent.self_checkin = config.self_checkin
+      }
+      if (events) sent.discord_events = config.discord_events
+      if (channels) {
+        sent.group_announce = config.group_announce
+        // Only when the list changed: each save checks the channels on Discord.
+        if (groupsChanged) (sent as Record<string, unknown>).group_channels = groupIds.map(Number)
+      }
+      if (dms) {
+        sent.welcome_dm = config.welcome_dm
+        sent.welcome_text = config.welcome_text
+      }
       await updateConnection(connection.id, { config: sent as Record<string, unknown> })
       notify('success', t('discord.saved', 'Gespeichert'))
       onChange()
@@ -125,6 +201,26 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
 
   return (
     <Stack gap="sm">
+      {missing.length > 0 && (
+        <Alert
+          color="orange"
+          variant="light"
+          title={t('discord.missingTitle', 'Dem Bot fehlen Berechtigungen')}
+        >
+          <Text size="sm">
+            {t(
+              'discord.missingText',
+              'Für die eingeschalteten Bereiche braucht die Hubra-Rolle noch: {{perms}}. Füge den Bot noch einmal zum Server hinzu, Discord ergänzt dann seine Rolle.',
+              { perms: missing.join(', ') },
+            )}
+          </Text>
+          {options.data.grantUrl && (
+            <Anchor href={options.data.grantUrl} target="_blank" rel="noreferrer" size="sm">
+              {t('discord.grant', 'Bot erneut hinzufügen')}
+            </Anchor>
+          )}
+        </Alert>
+      )}
       {announce && (
         <>
           <Text fw={600} size="sm">
@@ -278,13 +374,151 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
         </>
       )}
 
-      {(announce || roles) && (
-        <Group justify="flex-end">
-          <Button onClick={save} loading={busy}>
-            {t('common.save', 'Speichern')}
-          </Button>
-        </Group>
+      {events && (
+        <>
+          <Text fw={600} size="sm" mt="xs">
+            {t('discord.serverEvents', 'Discord-Events')}
+          </Text>
+          <Switch
+            label={t('discord.discordEvents', 'Anlässe in der Event-Liste des Servers')}
+            description={t(
+              'discord.discordEventsHint',
+              'Öffentliche Anlässe der nächsten 60 Tage, mit «Interessiert»-Knopf auf Discord. Anlässe nur für Mitglieder nur, wenn oben eingeschaltet. Anlässe einer Gruppe bleiben draussen.',
+            )}
+            checked={config.discord_events}
+            onChange={(e) => set({ discord_events: e.currentTarget.checked })}
+          />
+        </>
       )}
+
+      {channels && (
+        <>
+          <Text fw={600} size="sm" mt="xs">
+            {t('discord.groupChannels', 'Gruppenkanäle')}
+          </Text>
+          <MultiSelect
+            label={t('discord.groupChannelsPick', 'Private Kanäle für diese Gruppen')}
+            description={t(
+              'discord.groupChannelsHint',
+              'Der Bot legt pro Gruppe einen Kanal und eine Rolle an. Sehen können ihn nur Gruppenmitglieder, die ihr Discord-Konto verknüpft haben. Entfernte Gruppen behalten ihren Kanal, der Bot pflegt ihn nur nicht mehr.',
+            )}
+            placeholder={t('discord.pickGroups', 'Gruppen wählen')}
+            data={groupData}
+            value={groupIds}
+            onChange={setGroupIds}
+            maxValues={25}
+            searchable
+            clearable
+          />
+          {config.group_channels.length > 0 && (
+            <Text size="xs" c="dimmed">
+              {config.group_channels.map((g) => `#${g.name}`).join(', ')}
+            </Text>
+          )}
+          <Switch
+            label={t('discord.groupAnnounce', 'Anlässe und Umfragen der Gruppe dort ankündigen')}
+            checked={config.group_announce}
+            onChange={(e) => set({ group_announce: e.currentTarget.checked })}
+          />
+        </>
+      )}
+
+      {commands && (
+        <>
+          <Text fw={600} size="sm" mt="xs">
+            {t('discord.commands', 'Befehle und Knöpfe')}
+          </Text>
+          <Switch
+            label={t('discord.pollButtons', 'Abstimmen mit Knöpfen unter Umfragen')}
+            description={t(
+              'discord.pollButtonsHint',
+              'Es gelten die Regeln der App: wer abstimmen darf, Stellvertretung, Änderungen. Nur für verknüpfte Mitglieder.',
+            )}
+            checked={config.poll_buttons}
+            onChange={(e) => set({ poll_buttons: e.currentTarget.checked })}
+          />
+          <Switch
+            label={t('discord.selfCheckin', 'Mitglieder melden sich bei /trainings an oder ab')}
+            description={t(
+              'discord.selfCheckinHint',
+              'Ab einer Stunde vor Beginn bis Ende des Tages. Ausgeschaltet zeigt /trainings nur die Termine.',
+            )}
+            checked={config.self_checkin}
+            onChange={(e) => set({ self_checkin: e.currentTarget.checked })}
+          />
+        </>
+      )}
+
+      {dms && (
+        <>
+          <Text fw={600} size="sm" mt="xs">
+            {t('discord.dms', 'Direktnachrichten')}
+          </Text>
+          <Text size="xs" c="dimmed">
+            {t(
+              'discord.dmsHint',
+              'Benachrichtigungen per Discord wählt jedes Mitglied selbst unter Mein Konto › Benachrichtigungen.',
+            )}
+          </Text>
+          <Switch
+            label={t('discord.welcomeDm', 'Neue Leute auf dem Server begrüssen')}
+            description={t(
+              'discord.welcomeDmHint',
+              'Wer dem Server beitritt und noch nicht verknüpft ist, bekommt eine Nachricht mit dem Link zum Verknüpfen. Braucht den Gateway-Dienst der Plattform.',
+            )}
+            checked={config.welcome_dm}
+            onChange={(e) => set({ welcome_dm: e.currentTarget.checked })}
+          />
+          {config.welcome_dm && (
+            <Textarea
+              label={t('discord.welcomeText', 'Begrüssungstext')}
+              description={t(
+                'discord.welcomeTextHint',
+                'Leer lassen für den Standardtext. {club} wird zum Vereinsnamen, {link} zum Link fürs Verknüpfen.',
+              )}
+              autosize
+              minRows={3}
+              maxLength={MAX_WELCOME}
+              placeholder={t(
+                'discord.welcomeDefault',
+                'Willkommen auf dem Discord-Server von {club}! 👋 Bist du Mitglied? Verknüpfe dein Discord-Konto mit Hubra, dann bekommst du deine Rollen und Kanäle automatisch: {link}',
+              )}
+              value={config.welcome_text}
+              onChange={(e) => set({ welcome_text: e.currentTarget.value })}
+            />
+          )}
+        </>
+      )}
+
+      <Text fw={600} size="sm" mt="xs">
+        {t('discord.look', 'Aussehen auf diesem Server')}
+      </Text>
+      <Switch
+        label={t('discord.clubProfile', 'Bot erscheint als Verein')}
+        description={t(
+          'discord.clubProfileHint',
+          'Name, Logo und Kurzbeschreibung des Vereins statt «Hubra», nur auf diesem Server. Der Name braucht für die Hubra-Rolle die Berechtigung «Nickname ändern». Ein neues Logo erscheint beim nächsten Speichern hier oder spätestens nach einem Tag.',
+        )}
+        checked={config.club_profile}
+        onChange={(e) => set({ club_profile: e.currentTarget.checked })}
+      />
+      {announce && (
+        <Switch
+          label={t('discord.clubEmbeds', 'Ankündigungen in Vereinsfarbe mit Logo')}
+          description={t(
+            'discord.clubEmbedsHint',
+            'Hauptfarbe, Name und Logo des Vereins oben in jeder Ankündigung.',
+          )}
+          checked={config.club_embeds}
+          onChange={(e) => set({ club_embeds: e.currentTarget.checked })}
+        />
+      )}
+
+      <Group justify="flex-end">
+        <Button onClick={save} loading={busy}>
+          {t('common.save', 'Speichern')}
+        </Button>
+      </Group>
     </Stack>
   )
 }
