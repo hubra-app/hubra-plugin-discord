@@ -33,12 +33,16 @@ DEFAULT_CONFIG = {
     "members_only_events": False,
     "mention": "",
     "role_map": [],
+    # The bot as the club on this server (nickname, logo, bio), and the
+    # club's colour, name and logo on announcements. See profile.py.
+    "club_profile": True,
+    "club_embeds": True,
 }
 MAX_ROLE_MAP = 50
 
 
 def _permissions(scopes) -> int:
-    bits = 0
+    bits = api.CHANGE_NICKNAME if scopes else 0
     if "announce" in scopes:
         bits |= api.VIEW_CHANNEL | api.SEND_MESSAGES | api.EMBED_LINKS
     if "commands" in scopes:
@@ -126,7 +130,9 @@ class DiscordApp:
 
     def confirmed(self, conn):
         from .hooks import after_commit
-        from .tasks import sync_connection
+        from .tasks import apply_profile, sync_connection
+
+        after_commit(apply_profile.delay, conn.id)
 
         if apps.has_scope(conn, "roles"):
             after_commit(sync_connection.delay, conn.id)
@@ -169,9 +175,19 @@ class DiscordApp:
             "announce_polls",
             "announce_reminders",
             "members_only_events",
+            "club_profile",
+            "club_embeds",
         ):
             if key in config:
                 out[key] = bool(config[key])
+        out["profile_applied"] = (conn.config or {}).get("profile_applied")
+        if "club_profile" in config:
+            from .hooks import after_commit
+            from .tasks import apply_profile
+
+            # Also picks up a new club name or logo; nothing is sent when
+            # nothing changed.
+            after_commit(apply_profile.delay, conn.id)
 
         needs_server = (
             "channel_id" in config

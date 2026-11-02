@@ -1,6 +1,6 @@
 id: discord
 name: Discord
-version: "2.0.0"
+version: "2.1.0"
 hubra: ">=0.2,<1"
 description: "The Hubra bot on your Discord server: announcements, roles that follow your groups, and event sign-ups from Discord."
 author: Hubra

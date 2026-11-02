@@ -34,6 +34,8 @@ interface DiscordConfig {
   members_only_events: boolean
   mention: string
   role_map: RoleMapping[]
+  club_profile: boolean
+  club_embeds: boolean
 }
 
 const KINDS: {
@@ -65,6 +67,8 @@ function readConfig(c: Connection): DiscordConfig {
     members_only_events: raw.members_only_events ?? false,
     mention: raw.mention ?? '',
     role_map: raw.role_map ?? [],
+    club_profile: raw.club_profile ?? true,
+    club_embeds: raw.club_embeds ?? true,
   }
 }
 
@@ -99,7 +103,10 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const save = async () => {
     setBusy(true)
     try {
-      const sent: Partial<DiscordConfig> = {}
+      const sent: Partial<DiscordConfig> = {
+        club_profile: config.club_profile,
+        club_embeds: config.club_embeds,
+      }
       if (announce) {
         Object.assign(sent, {
           channel_id: config.channel_id,
@@ -278,13 +285,35 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
         </>
       )}
 
-      {(announce || roles) && (
-        <Group justify="flex-end">
-          <Button onClick={save} loading={busy}>
-            {t('common.save', 'Speichern')}
-          </Button>
-        </Group>
+      <Text fw={600} size="sm" mt="xs">
+        {t('discord.look', 'Aussehen auf diesem Server')}
+      </Text>
+      <Switch
+        label={t('discord.clubProfile', 'Bot erscheint als Verein')}
+        description={t(
+          'discord.clubProfileHint',
+          'Name, Logo und Kurzbeschreibung des Vereins statt «Hubra», nur auf diesem Server. Der Name braucht für die Hubra-Rolle die Berechtigung «Nickname ändern». Ein neues Logo erscheint beim nächsten Speichern hier oder spätestens nach einem Tag.',
+        )}
+        checked={config.club_profile}
+        onChange={(e) => set({ club_profile: e.currentTarget.checked })}
+      />
+      {announce && (
+        <Switch
+          label={t('discord.clubEmbeds', 'Ankündigungen in Vereinsfarbe mit Logo')}
+          description={t(
+            'discord.clubEmbedsHint',
+            'Hauptfarbe, Name und Logo des Vereins oben in jeder Ankündigung.',
+          )}
+          checked={config.club_embeds}
+          onChange={(e) => set({ club_embeds: e.currentTarget.checked })}
+        />
       )}
+
+      <Group justify="flex-end">
+        <Button onClick={save} loading={busy}>
+          {t('common.save', 'Speichern')}
+        </Button>
+      </Group>
     </Stack>
   )
 }

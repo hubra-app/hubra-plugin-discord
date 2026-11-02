@@ -23,7 +23,12 @@
       "channelHint": "Everything without its own channel below goes here.",
       "mainChannel": "Main channel",
       "channelFor": "Channel for {{what}}",
-      "reminders": "Reminders (event coming up, poll closing soon)"
+      "reminders": "Reminders (event coming up, poll closing soon)",
+      "look": "Look on this server",
+      "clubProfile": "Bot appears as the club",
+      "clubProfileHint": "The club's name, logo and a short bio instead of \"Hubra\", on this server only. The name needs the Hubra role to have \"Change Nickname\". A new logo shows the next time you save here, or within a day.",
+      "clubEmbeds": "Announcements in the club's colour with its logo",
+      "clubEmbedsHint": "The club's main colour, name and logo at the top of every announcement."
     }
   },
   "de-CH": {
@@ -50,7 +55,12 @@
       "channelHint": "Hierhin geht alles, wofür unten kein eigener Kanal gewählt ist.",
       "mainChannel": "Hauptkanal",
       "channelFor": "Kanal für {{what}}",
-      "reminders": "Erinnerungen (Anlass steht bevor, Umfrage schliesst bald)"
+      "reminders": "Erinnerungen (Anlass steht bevor, Umfrage schliesst bald)",
+      "look": "Aussehen auf diesem Server",
+      "clubProfile": "Bot erscheint als Verein",
+      "clubProfileHint": "Name, Logo und Kurzbeschreibung des Vereins statt «Hubra», nur auf diesem Server. Der Name braucht für die Hubra-Rolle die Berechtigung «Nickname ändern». Ein neues Logo erscheint beim nächsten Speichern hier oder spätestens nach einem Tag.",
+      "clubEmbeds": "Ankündigungen in Vereinsfarbe mit Logo",
+      "clubEmbedsHint": "Hauptfarbe, Name und Logo des Vereins oben in jeder Ankündigung."
     }
   }
 }

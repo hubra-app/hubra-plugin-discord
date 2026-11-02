@@ -64,8 +64,12 @@ def send_announcement(
         channel = channel_for(conn.config or {}, kind or "")
         if not channel:
             return
+        from hubra.core.tenant.context import current_tenant
+
+        from .profile import brand
+
         try:
-            api.send(channel, body)
+            api.send(channel, brand(body, current_tenant(), conn.config or {}))
         except DiscordError as exc:
             if not exc.retryable:  # no access, channel gone: retrying won't help
                 _failed(conn, "announced", exc)
@@ -142,7 +146,40 @@ def sync_all_clubs() -> int:
     ).all()
     for connection_id in ids:
         sync_connection.delay(connection_id)
+        apply_profile.delay(connection_id)
     return len(ids)
+
+
+@celery_app.task(name="hubra_discord.tasks.apply_profile", bind=True, max_retries=3)
+def apply_profile(self, connection_id: int, force: bool = False) -> None:
+    """The bot's nickname, avatar and bio on this club's server."""
+    from hubra.core.models.connected_app import ConnectedApp
+    from hubra.core.models.tenant import Tenant
+    from hubra.core.tenant.context import in_club
+
+    from .profile import apply
+
+    conn = db.session.get(ConnectedApp, connection_id)
+    if conn is None or conn.status != "active":
+        return
+    tenant = db.session.get(Tenant, conn.tenant_id)
+    if tenant is None or tenant.status != "active":
+        return
+    with in_club(tenant):
+        try:
+            problems = apply(conn, tenant, force=force)
+        except DiscordError as exc:
+            if not exc.retryable:
+                _failed(conn, "profile", exc)
+                return
+            raise self.retry(exc=exc, countdown=exc.retry_after or 60) from exc
+        if problems is None:
+            return  # nothing changed
+        if problems:
+            apps.record(conn, "profile", False, "; ".join(problems)[:500])
+        else:
+            apps.record(conn, "profile", True, "Club look applied")
+        db.session.commit()
 
 
 @celery_app.task(name="hubra_discord.tasks.register_commands", bind=True, max_retries=5)

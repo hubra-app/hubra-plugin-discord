@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.1.0
+
+- The bot appears as the club on the club's server: the club's name as its
+  nickname, the club logo as its avatar (PNG, JPEG, GIF or WebP; an SVG logo
+  is left out) and a one-line bio. Discord allows this per server, so other
+  servers still see Hubra. On by default; off resets to the app's own look.
+  Applied when the server is connected, when the club saves its Discord
+  settings, and nightly when the club's name or logo changed.
+- Announcements show the club's name and logo at the top and use the
+  club's main colour (switch "Ankündigungen in Vereinsfarbe mit Logo").
+- The add-to-server link also asks for Change Nickname. Servers added
+  before 2.1 need it given to the Hubra role for the nickname; the logo and
+  bio work without it.
+
 ## 2.0.0
 
 The webhook is replaced by the Hubra bot. Needs a Hubra with connected apps

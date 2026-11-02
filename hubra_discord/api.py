@@ -25,6 +25,8 @@ VIEW_CHANNEL = 1 << 10
 SEND_MESSAGES = 1 << 11
 EMBED_LINKS = 1 << 14
 MANAGE_ROLES = 1 << 28
+# The bot's own nickname per server (the club's name).
+CHANGE_NICKNAME = 1 << 26
 
 # Channel types announcements can go to: text and announcement channels.
 TEXT_CHANNELS = (0, 5)

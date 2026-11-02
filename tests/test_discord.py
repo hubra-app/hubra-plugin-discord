@@ -129,9 +129,12 @@ def test_authorize_url_asks_for_little(app, discord_settings):
     query = parse_qs(url.query)
     assert query["scope"] == ["bot applications.commands"]
     bits = int(query["permissions"][0])
-    assert (
-        bits
-        == api.VIEW_CHANNEL | api.SEND_MESSAGES | api.EMBED_LINKS | api.MANAGE_ROLES
+    assert bits == (
+        api.VIEW_CHANNEL
+        | api.SEND_MESSAGES
+        | api.EMBED_LINKS
+        | api.MANAGE_ROLES
+        | api.CHANGE_NICKNAME
     )
     assert not bits & 8  # never Administrator
     assert query["state"] == ["st"]
@@ -176,11 +179,13 @@ def test_connect_confirm_and_disconnect(client, db, club_auth, tenant):
     with (
         patch("hubra_discord.tasks.sync_connection.delay") as sync,
         patch("hubra_discord.tasks.register_commands.delay") as register,
+        patch("hubra_discord.tasks.apply_profile.delay") as profile,
     ):
         resp = client.post(f"/api/v1/apps/connections/{conn_id}/confirm", headers=H)
     assert resp.status_code == 200
     sync.assert_called_once_with(conn_id)
     register.assert_called_once()
+    profile.assert_called_once_with(conn_id)
     assert apps.active("discord", GUILD).id == conn_id
 
     with patch.object(api, "bot") as bot:
@@ -411,7 +416,7 @@ def test_only_the_configured_mention_pings():
 def test_announcement_task_posts_and_records(app, db, tenant):
     from hubra_discord.tasks import send_announcement
 
-    conn = _conn(db, tenant)
+    conn = _conn(db, tenant, club_embeds=False)
     body = payload("", [{"title": "Hi"}])
     with patch.object(api, "bot") as bot:
         send_announcement.run(conn.id, body)
@@ -822,3 +827,124 @@ def test_poll_closing_names_no_one(client, db, club_auth, tenant, queued):
     item = body["embeds"][0]
     assert item["title"].startswith("⏳") and "Pizza?" in item["title"]
     assert "Haven't voted" in item["description"]
+
+
+# ── The club's look ──────────────────────────────────────────────────────────
+
+PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _brand(db, tenant, **branding):
+    tenant.settings = {**(tenant.settings or {}), "branding": branding}
+    db.session.commit()
+
+
+def test_announcements_carry_the_club_look(app, db, tenant):
+    from hubra_discord.tasks import send_announcement
+
+    app.config["API_PUBLIC_URL"] = "https://api.example.org"
+    _brand(db, tenant, club_name="FC Example", primary_color="#12ab34", logo=PNG)
+    conn = _conn(db, tenant)
+    try:
+        with patch.object(api, "bot") as bot:
+            send_announcement.run(conn.id, payload("", [{"title": "Hi", "color": 1}]))
+    finally:
+        app.config["API_PUBLIC_URL"] = ""
+    embed = bot.call_args.args[2]["embeds"][0]
+    assert embed["color"] == 0x12AB34
+    assert embed["author"]["name"] == "FC Example"
+    assert embed["author"]["icon_url"].startswith(
+        "https://api.example.org/api/v1/system/clubs/club-a/logo?v="
+    )
+
+
+def test_profile_sets_nick_avatar_and_bio_once(app, db, tenant):
+    from hubra_discord.tasks import apply_profile
+
+    _brand(db, tenant, club_name="FC Example", logo=PNG, locale="de-CH")
+    conn = _conn(db, tenant)
+    with patch.object(api, "bot") as bot:
+        apply_profile.run(conn.id)
+        apply_profile.run(conn.id)  # nothing changed: no second call
+    path = f"/guilds/{GUILD}/members/@me"
+    assert [c.args[:2] for c in bot.call_args_list] == [("PATCH", path)] * 2
+    assert bot.call_args_list[0].args[2] == {"nick": "FC Example"}
+    second = bot.call_args_list[1].args[2]
+    assert second["avatar"] == PNG
+    assert second["bio"] == "Der Hubra-Bot von FC Example."
+    event = db.session.query(ConnectedAppEvent).filter_by(action="profile").one()
+    assert event.ok
+
+    _brand(db, tenant, club_name="FC Renamed", logo=PNG)
+    with patch.object(api, "bot") as bot:
+        apply_profile.run(conn.id)
+    assert bot.call_args_list[0].args[2] == {"nick": "FC Renamed"}
+
+
+def test_svg_logo_is_left_out_of_the_avatar(app, db, tenant):
+    from hubra_discord.profile import desired
+
+    svg = "data:image/svg+xml;base64,PHN2Zy8+"
+    _brand(db, tenant, logo=svg)
+    conn = _conn(db, tenant)
+    assert desired(conn, tenant)["avatar"] is None
+    assert desired(conn, tenant)["nick"] == "Club A"
+
+
+def test_profile_off_resets_to_the_app(app, db, tenant):
+    from hubra_discord.tasks import apply_profile
+
+    conn = _conn(db, tenant, club_profile=False)
+    with patch.object(api, "bot") as bot:
+        apply_profile.run(conn.id)
+    assert bot.call_args_list[0].args[2] == {"nick": None}
+    assert bot.call_args_list[1].args[2] == {"avatar": None, "bio": None}
+
+
+def test_missing_nickname_permission_still_sets_the_logo(app, db, tenant):
+    from hubra_discord.tasks import apply_profile
+
+    conn = _conn(db, tenant)
+    calls = []
+
+    def fake(method, path, body=None, **_):
+        calls.append(body)
+        if "nick" in body:
+            raise DiscordError("Missing Permissions", 403)
+
+    with patch.object(api, "bot", side_effect=fake):
+        apply_profile.run(conn.id)
+    assert len(calls) == 2  # the avatar and bio went on
+    db.session.refresh(conn)
+    assert "Change Nickname" in conn.last_error
+    assert "profile_applied" not in (conn.config or {})  # tried again tomorrow
+
+
+def test_saving_the_look_queues_the_profile(client, db, club_auth, tenant):
+    conn = _conn(db, tenant)
+    with patch("hubra_discord.tasks.apply_profile.delay") as queued:
+        resp = client.patch(
+            f"/api/v1/apps/connections/{conn.id}",
+            json={"config": {"club_profile": False, "club_embeds": False}},
+            headers=H,
+        )
+    assert resp.status_code == 200, resp.get_json()
+    queued.assert_called_once_with(conn.id)
+    db.session.refresh(conn)
+    assert conn.config["club_profile"] is False
+    assert conn.config["club_embeds"] is False
+
+
+def test_nightly_run_refreshes_the_profile(app, db, tenant):
+    from hubra_discord.tasks import sync_all_clubs
+
+    conn = _conn(db, tenant)
+    with (
+        patch("hubra_discord.tasks.sync_connection.delay"),
+        patch("hubra_discord.tasks.apply_profile.delay") as profile,
+    ):
+        sync_all_clubs.run()
+    profile.assert_called_once_with(conn.id)
