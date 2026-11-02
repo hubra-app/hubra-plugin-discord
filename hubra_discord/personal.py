@@ -14,7 +14,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from hubra.core import apps
+
+from . import botlog
 from hubra.core.extensions import db
 
 UPCOMING_DAYS = 14
@@ -236,7 +237,7 @@ def attend(conn, member, custom_id: str) -> dict:
     if wanted is None and now > closes:
         return reply("Das geht nur bis Ende des Trainingstages.")
     attendance.set_status(event, member.id, wanted, actor_id=member.id)
-    apps.record(conn, "attendance", True, f"{member.name}: {parts[2]} · {event.title}")
+    botlog.log(conn, "attendance", True, f"{member.name}: {parts[2]} · {event.title}")
     db.session.commit()
     text = {
         "present": f"✅ Eingecheckt: **{event.title}**.",

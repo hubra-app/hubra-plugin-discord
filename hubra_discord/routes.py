@@ -10,6 +10,7 @@ be connected to a club (``hubra.core.apps``) that has the Discord module on.
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from cryptography.exceptions import InvalidSignature
@@ -21,6 +22,8 @@ from hubra.core.extensions import db
 
 from . import api
 from .commands import handle, reply
+
+_log = logging.getLogger(__name__)
 
 discord_bp = Blueprint("discord_bp", __name__)
 
@@ -112,4 +115,40 @@ def interactions():
     with in_club(tenant):
         if not is_enabled("discord"):
             return jsonify(reply("Discord ist für diesen Verein ausgeschaltet.")), 200
-        return jsonify(handle(conn, interaction)), 200
+        return jsonify(_handle_logged(conn, interaction)), 200
+
+
+def _what(interaction: dict) -> str:
+    data = interaction.get("data") or {}
+    user = (
+        (interaction.get("member") or {}).get("user") or interaction.get("user") or {}
+    )
+    who = user.get("global_name") or user.get("username") or "someone"
+    if interaction.get("type") == 2:
+        return f"/{data.get('name', '?')} by {who}"
+    action = str(data.get("custom_id", "")).partition(":")[0] or "button"
+    return f"{action} button by {who}"
+
+
+def _handle_logged(conn, interaction: dict) -> dict:
+    """Run a command or button, and log it (and any crash) in the bot log."""
+    from . import botlog
+
+    what = _what(interaction)
+    try:
+        answer = handle(conn, interaction)
+    except Exception as exc:  # noqa: BLE001  answer the person, log the cause
+        db.session.rollback()
+        _log.exception("discord: interaction failed: %s", what)
+        botlog.log(
+            conn, "command", False, f"{what} failed: {type(exc).__name__}: {exc}"
+        )
+        db.session.commit()
+        return reply(
+            "Das hat nicht geklappt. Der Fehler ist im Bot-Protokoll vermerkt."
+        )
+    if interaction.get("type") == 2:
+        # Buttons log their own result (sign-up, vote, attendance).
+        botlog.log(conn, "command", True, what)
+        db.session.commit()
+    return answer

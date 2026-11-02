@@ -15,6 +15,8 @@ from sqlalchemy import event as sa_event
 from hubra.core import apps
 from hubra.core.extensions import db
 
+from . import botlog
+
 from .commands import event_buttons
 from .messages import (
     event_embed,
@@ -69,30 +71,57 @@ def _connections(tenant_id, scope: str):
 # ── Announcements ────────────────────────────────────────────────────────────
 
 
-def _announce(tenant_id, kind: str, toggle: str, build) -> None:
+SWITCH_NAMES = {
+    "announce_events": "Neue Anlässe posten",
+    "announce_posts": "Neue Beiträge posten",
+    "announce_polls": "Neue Umfragen posten",
+    "announce_reminders": "Erinnerungen posten",
+}
+
+
+def _announce(tenant_id, kind: str, toggle: str, build, what: str = "") -> None:
     from .app import channel_for
     from .tasks import send_announcement
 
     for conn in _connections(tenant_id, "announce"):
         config = conn.config or {}
-        if not channel_for(config, kind) or not config.get(toggle):
+        if not config.get(toggle):
+            botlog.skipped(
+                conn, what or kind, f'"{SWITCH_NAMES.get(toggle, toggle)}" is off'
+            )
+            continue
+        if not channel_for(config, kind):
+            botlog.skipped(
+                conn, what or kind, f"no channel picked for {kind} or the main channel"
+            )
             continue
         built = build(conn)
         if built is None:
+            botlog.skipped(
+                conn,
+                what or kind,
+                'members-only event; switch on "Auch Anlässe nur für Mitglieder" '
+                "to post members-only events",
+            )
             continue
         item, components = built if isinstance(built, tuple) else (built, None)
         body = payload(config.get("mention"), [item], components)
         after_commit(send_announcement.delay, conn.id, body, kind)
 
 
-def _to_groups(tenant_id, group_ids, build) -> None:
+def _to_groups(tenant_id, group_ids, build, what: str = "") -> None:
     """Post in the private channels of these groups (``channels`` scope)."""
     from .groups import channel_for_group
     from .tasks import send_to_group_channel
 
     for conn in _connections(tenant_id, "channels"):
         if not (conn.config or {}).get("group_announce", True):
+            botlog.skipped(conn, what, "posting in group channels is off")
             continue
+        if not any(channel_for_group(conn, gid) for gid in group_ids or ()):
+            botlog.skipped(
+                conn, what, "only for some groups, and none of them has a channel"
+            )
         for gid in group_ids or ():
             if not channel_for_group(conn, gid):
                 continue
@@ -129,7 +158,10 @@ def on_event_published(tenant_id=None, event_id=None, **_):
 
     if _has_group_channel(tenant_id, event.group_id):
         _to_groups(
-            tenant_id, [event.group_id], lambda c: (event_embed(event), buttons_for(c))
+            tenant_id,
+            [event.group_id],
+            lambda c: (event_embed(event), buttons_for(c)),
+            f'Event "{event.title}"',
         )
         return  # a group's event goes to its channel, not the whole server
 
@@ -138,7 +170,7 @@ def on_event_published(tenant_id=None, event_id=None, **_):
             return None
         return event_embed(event), buttons_for(conn)
 
-    _announce(tenant_id, "events", "announce_events", build)
+    _announce(tenant_id, "events", "announce_events", build, f'Event "{event.title}"')
 
 
 def on_event_changed(tenant_id=None, event_id=None, **_):
@@ -150,7 +182,13 @@ def on_post_published(tenant_id=None, post_id=None, **_):
 
     post = db.session.get(Post, post_id)
     if post is not None:
-        _announce(tenant_id, "posts", "announce_posts", lambda _conn: post_embed(post))
+        _announce(
+            tenant_id,
+            "posts",
+            "announce_posts",
+            lambda _conn: post_embed(post),
+            f'Post "{post.title}"',
+        )
 
 
 def _poll_buttons(conn, poll):
@@ -177,6 +215,7 @@ def on_poll_published(tenant_id=None, poll_id=None, **_):
                 poll_embed(poll, _poll_buttons(c, poll) is not None),
                 _poll_buttons(c, poll),
             ),
+            f'Poll "{poll.question}"',
         )
         return
     _announce(
@@ -187,6 +226,7 @@ def on_poll_published(tenant_id=None, poll_id=None, **_):
             poll_embed(poll, _poll_buttons(c, poll) is not None),
             _poll_buttons(c, poll),
         ),
+        f'Poll "{poll.question}"',
     )
 
 
@@ -210,6 +250,7 @@ def on_event_reminder(tenant_id=None, event_id=None, **_):
             tenant_id,
             [event.group_id],
             lambda c: (event_reminder_embed(event), buttons_for(c)),
+            f'Reminder for "{event.title}"',
         )
         return
 
@@ -218,7 +259,13 @@ def on_event_reminder(tenant_id=None, event_id=None, **_):
             return None
         return event_reminder_embed(event), buttons_for(conn)
 
-    _announce(tenant_id, "reminders", "announce_reminders", build)
+    _announce(
+        tenant_id,
+        "reminders",
+        "announce_reminders",
+        build,
+        f'Reminder for "{event.title}"',
+    )
 
 
 def on_poll_closing(tenant_id=None, poll_id=None, **_):
@@ -232,6 +279,7 @@ def on_poll_closing(tenant_id=None, poll_id=None, **_):
             tenant_id,
             poll.required_group_ids,
             lambda c: (poll_closing_embed(poll), _poll_buttons(c, poll)),
+            f'Poll closing "{poll.question}"',
         )
         return
     _announce(
@@ -239,6 +287,7 @@ def on_poll_closing(tenant_id=None, poll_id=None, **_):
         "reminders",
         "announce_reminders",
         lambda c: (poll_closing_embed(poll), _poll_buttons(c, poll)),
+        f'Poll closing "{poll.question}"',
     )
 
 

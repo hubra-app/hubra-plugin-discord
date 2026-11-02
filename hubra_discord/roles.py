@@ -13,6 +13,8 @@ from datetime import date
 from sqlalchemy import select
 
 from hubra.core import apps
+
+from . import botlog
 from hubra.core.extensions import db
 
 from . import api
@@ -161,7 +163,7 @@ def _ensure_group_roles(conn) -> None:
 
     if group_roles.missing(conn):
         for change in group_roles.ensure(conn):
-            apps.record(conn, "roles", True, f"group roles: {change}")
+            botlog.log(conn, "roles", True, f"group roles: {change}")
 
 
 def sync_member(conn, member, names: dict | None = None) -> str | None:
@@ -182,7 +184,7 @@ def sync_all(conn) -> int:
     from . import group_roles
 
     for change in group_roles.ensure(conn):  # renames and removals too
-        apps.record(conn, "roles", True, f"group roles: {change}")
+        botlog.log(conn, "roles", True, f"group roles: {change}")
     if not managed_map(conn):
         return 0
     linked = set(
@@ -198,5 +200,5 @@ def sync_all(conn) -> int:
         detail = sync_member(conn, member, names)
         if detail:
             changed += 1
-            apps.record(conn, "roles", True, detail)
+            botlog.log(conn, "roles", True, detail)
     return changed

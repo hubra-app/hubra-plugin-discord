@@ -28,6 +28,7 @@ interface Options {
   roles: { id: string; name: string; assignable: boolean }[]
   sources: { key: string; label: string; kind: string }[]
   missingPermissions?: string[]
+  channelProblems?: { channel: string; uses: string[]; missing: string[] }[]
   grantUrl?: string
 }
 
@@ -67,6 +68,8 @@ interface DiscordConfig {
   hubra_news: boolean
   maintenance_notices: boolean
   group_roles: boolean
+  log_channel_id: string | null
+  log_level: 'errors' | 'all'
 }
 
 const MAX_WELCOME = 1500
@@ -112,6 +115,8 @@ function readConfig(c: Connection): DiscordConfig {
     hubra_news: raw.hubra_news ?? false,
     maintenance_notices: raw.maintenance_notices ?? false,
     group_roles: raw.group_roles ?? false,
+    log_channel_id: raw.log_channel_id ?? null,
+    log_level: raw.log_level ?? 'errors',
   }
 }
 
@@ -151,6 +156,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const channels = connection.scopes.includes('channels')
   const dms = connection.scopes.includes('notify')
   const missing = options.data.missingPermissions ?? []
+  const channelProblems = options.data.channelProblems ?? []
   const savedGroups = config.group_channels.map((g) => String(g.group_id))
   const groupsChanged =
     groupIds.length !== savedGroups.length || groupIds.some((g, i) => g !== savedGroups[i])
@@ -167,6 +173,8 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
       const sent: Partial<DiscordConfig> = {
         club_profile: config.club_profile,
         club_embeds: config.club_embeds,
+        log_channel_id: config.log_channel_id,
+        log_level: config.log_level,
       }
       if (announce) {
         Object.assign(sent, {
@@ -212,6 +220,25 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
 
   return (
     <Stack gap="sm">
+      {channelProblems.length > 0 && (
+        <Alert
+          color="red"
+          variant="light"
+          title={t('discord.channelProblemsTitle', 'Der Bot kann nicht in alle Kanäle schreiben')}
+        >
+          <Stack gap={4}>
+            {channelProblems.map((p) => (
+              <Text size="sm" key={p.channel}>
+                {t(
+                  'discord.channelProblem',
+                  '{{channel}} ({{uses}}): es fehlt {{perms}}. Gib der Hubra-Rolle diese Rechte in den Kanaleinstellungen › Berechtigungen.',
+                  { channel: p.channel, uses: p.uses.join(', '), perms: p.missing.join(', ') },
+                )}
+              </Text>
+            ))}
+          </Stack>
+        </Alert>
+      )}
       {missing.length > 0 && (
         <Alert
           color="orange"
@@ -551,6 +578,40 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           onChange={(e) => set({ club_embeds: e.currentTarget.checked })}
         />
       )}
+
+      <Text fw={600} size="sm">
+        {t('discord.log', 'Bot-Protokoll')}
+      </Text>
+      <Text size="xs" c="dimmed">
+        {t(
+          'discord.logHint',
+          'Alles, was der Bot tut oder auslässt, steht unten unter «Letzte Aktivität», mit dem Grund. Zusätzlich kann er es in einen Kanal auf eurem Server schreiben.',
+        )}
+      </Text>
+      <Group gap="sm" wrap="wrap" align="flex-end">
+        <Select
+          style={{ flex: 1, minWidth: 200 }}
+          label={t('discord.logChannel', 'Protokoll-Kanal')}
+          placeholder={t('discord.logNone', 'Keiner')}
+          data={channelData}
+          value={config.log_channel_id}
+          onChange={(v) => set({ log_channel_id: v })}
+          searchable
+          clearable
+        />
+        <Select
+          style={{ flex: 1, minWidth: 200 }}
+          label={t('discord.logLevel', 'Was ins Protokoll kommt')}
+          data={[
+            { value: 'errors', label: t('discord.logErrors', 'Nur Fehler') },
+            { value: 'all', label: t('discord.logAll', 'Alles (auch Ausgelassenes)') },
+          ]}
+          value={config.log_level}
+          onChange={(v) => set({ log_level: v === 'all' ? 'all' : 'errors' })}
+          disabled={!config.log_channel_id}
+          allowDeselect={false}
+        />
+      </Group>
 
       <Group justify="flex-end">
         <Button onClick={save} loading={busy}>
