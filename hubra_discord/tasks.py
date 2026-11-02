@@ -262,6 +262,19 @@ def sync_events(self, connection_id: int) -> dict | None:
         return counts
 
 
+def _platform_joined(guild_id: str, user_id: str) -> str:
+    """The platform's own server: Hubra gives the platform roles."""
+    try:
+        from hubra.core.services import platform_roles
+    except ImportError:  # Hubra without platform roles
+        return ""
+    try:
+        return "platform roles" if platform_roles.joined(guild_id, user_id) else ""
+    except Exception:  # noqa: BLE001  the next regular sync catches up
+        _log.warning("discord: platform roles on join failed", exc_info=True)
+        return ""
+
+
 @celery_app.task(name="hubra_discord.tasks.member_joined", bind=True, max_retries=3)
 def member_joined(self, guild_id: str, user_id: str) -> str:
     """From the gateway: someone joined a server (welcome, roles)."""
@@ -273,7 +286,7 @@ def member_joined(self, guild_id: str, user_id: str) -> str:
 
     conn = apps.active("discord", guild_id)
     if conn is None:
-        return ""
+        return _platform_joined(guild_id, user_id)
     tenant = db.session.get(Tenant, conn.tenant_id)
     if tenant is None or tenant.status != "active":
         return ""

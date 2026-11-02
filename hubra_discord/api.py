@@ -223,9 +223,23 @@ def create_role(guild_id: str, name: str, reason: str) -> dict:
     return bot(
         "POST",
         f"/guilds/{guild_id}/roles",
-        {"name": name[:100], "mentionable": False, "hoist": False},
+        # No permissions of its own (Discord would copy @everyone's).
+        {"name": name[:100], "permissions": "0", "mentionable": False, "hoist": False},
         reason=reason,
     )
+
+
+def edit_role(guild_id: str, role_id: str, body: dict, reason: str) -> dict:
+    return bot("PATCH", f"/guilds/{guild_id}/roles/{role_id}", body, reason=reason)
+
+
+def delete_role(guild_id: str, role_id: str, reason: str) -> None:
+    """Delete a role; one that is gone already is fine."""
+    try:
+        bot("DELETE", f"/guilds/{guild_id}/roles/{role_id}", reason=reason)
+    except DiscordError as exc:
+        if exc.status != 404:
+            raise
 
 
 def create_channel(guild_id: str, body: dict, reason: str) -> dict:

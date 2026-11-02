@@ -109,8 +109,10 @@ def _names(guild_id: str) -> dict[str, str]:
 
 
 def managed_map(conn) -> list[dict]:
-    """The role mappings Hubra keeps up: the club's own (``roles`` scope)
-    and the roles of group channels (``channels`` scope)."""
+    """The role mappings Hubra keeps up: the club's own (``roles`` scope),
+    the roles of group channels (``channels`` scope) and the automatic group
+    roles (group_roles.py)."""
+    from .group_roles import role_sources as auto_sources
     from .groups import role_sources
 
     own = (
@@ -118,7 +120,7 @@ def managed_map(conn) -> list[dict]:
         if apps.has_scope(conn, "roles")
         else []
     )
-    return own + role_sources(conn)
+    return own + role_sources(conn) + auto_sources(conn)
 
 
 def apply(conn, user_id: str, want: set[str], label: str, names: dict | None = None):
@@ -154,7 +156,16 @@ def _name(member) -> str:
     return f"{member.first_name} {member.last_name}".strip() or f"#{member.id}"
 
 
+def _ensure_group_roles(conn) -> None:
+    from . import group_roles
+
+    if group_roles.missing(conn):
+        for change in group_roles.ensure(conn):
+            apps.record(conn, "roles", True, f"group roles: {change}")
+
+
 def sync_member(conn, member, names: dict | None = None) -> str | None:
+    _ensure_group_roles(conn)  # a new group gets its role first
     if not managed_map(conn):
         return None
     user_id = discord_id(member)
@@ -168,6 +179,10 @@ def sync_all(conn) -> int:
     from hubra.core.models.connected_app import ExternalAccount
     from hubra.core.models.member import Member
 
+    from . import group_roles
+
+    for change in group_roles.ensure(conn):  # renames and removals too
+        apps.record(conn, "roles", True, f"group roles: {change}")
     if not managed_map(conn):
         return 0
     linked = set(

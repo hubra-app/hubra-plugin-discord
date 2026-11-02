@@ -55,9 +55,12 @@ DEFAULT_CONFIG = {
     # and planned or running maintenance.
     "hubra_news": False,
     "maintenance_notices": False,
+    # A role for every open or visible group (``roles`` scope), made and
+    # kept up by the bot (group_roles.py).
+    "group_roles": False,
 }
 # Kept by the bot, not set by the club.
-INTERNAL = ("guild_name", "profile_applied", "scheduled_events")
+INTERNAL = ("guild_name", "profile_applied", "scheduled_events", "auto_group_roles")
 BOOLS = (
     "announce_events",
     "announce_posts",
@@ -73,6 +76,7 @@ BOOLS = (
     "self_checkin",
     "hubra_news",
     "maintenance_notices",
+    "group_roles",
 )
 MAX_ROLE_MAP = 50
 
@@ -273,6 +277,14 @@ class DiscordApp:
         for key in BOOLS:
             if key in config:
                 out[key] = bool(config[key])
+        if "group_roles" in config:
+            if out["group_roles"] and not apps.has_scope(conn, "roles"):
+                raise apps.AppError("Turn on roles for this connection first")
+            if out["group_roles"] != bool((conn.config or {}).get("group_roles")):
+                from .hooks import after_commit
+                from .tasks import sync_connection
+
+                after_commit(sync_connection.delay, conn.id)  # make or delete
         if "welcome_text" in config:
             text = str(config["welcome_text"] or "").strip()
             from .notify import MAX_WELCOME

@@ -1584,3 +1584,144 @@ def test_platform_notice_toggles_are_saved(app, db, tenant):
     for key in ("hubra_news", "maintenance_notices"):
         assert key in BOOLS
         assert DEFAULT_CONFIG[key] is False
+
+
+# ── Automatic group roles ─────────────────────────────────────────────────────
+
+
+class GroupRoleServer:
+    """A server whose roles the bot makes, renames and deletes."""
+
+    def __init__(self):
+        self.roles: dict[str, dict] = {ROLE_OTHER: {"id": ROLE_OTHER, "name": "Mods"}}
+        self.member: set[str] = {ROLE_OTHER}
+        self.calls: list = []
+        self.next_id = 7000
+
+    def __call__(self, method, path, body=None, **kw):
+        self.calls.append((method, path, body))
+        parts = path.strip("/").split("/")
+        if parts[-1] == "roles" and method == "GET":
+            return list(self.roles.values())
+        if parts[-1] == "roles" and method == "POST":
+            self.next_id += 1
+            rid = str(self.next_id)
+            self.roles[rid] = {"id": rid, **body}
+            return self.roles[rid]
+        if len(parts) == 4 and parts[2] == "roles":
+            if method == "PATCH":
+                self.roles[parts[3]].update(body)
+                return self.roles[parts[3]]
+            if method == "DELETE":
+                self.roles.pop(parts[3], None)
+                self.member.discard(parts[3])
+                return None
+        if path.endswith("/members/42") and method == "GET":
+            return {"roles": sorted(self.member)}
+        if "/members/42/roles/" in path:
+            role = parts[-1]
+            (self.member.add if method == "PUT" else self.member.discard)(role)
+            return None
+        raise AssertionError(path)
+
+    def names(self) -> set[str]:
+        return {self.roles[r]["name"] for r in self.member if r in self.roles}
+
+
+def _group_roles_conn(db, tenant, **config):
+    return _conn(db, tenant, group_roles=True, **config)
+
+
+def test_every_group_gets_a_role(app, db, tenant, trainer):
+    from hubra.core.models.group import Group
+
+    from hubra_discord.tasks import sync_connection
+
+    db.session.add(Group(name="Vorstand", visibility="private"))
+    db.session.commit()
+    conn = _group_roles_conn(db, tenant)
+    server = GroupRoleServer()
+    with patch.object(api, "bot", side_effect=server):
+        assert sync_connection.run(conn.id) == 1
+    made = {r["name"]: r for r in server.roles.values() if r["id"] != ROLE_OTHER}
+    assert set(made) == {"Trainer"}  # the private group gets none
+    assert made["Trainer"]["permissions"] == "0"
+    assert not made["Trainer"]["mentionable"]
+    assert server.names() == {"Mods", "Trainer"}
+    db.session.refresh(conn)
+    assert conn.config["auto_group_roles"][0]["group_id"] == trainer.id
+
+    # Nothing new: no role is made twice.
+    with patch.object(api, "bot", side_effect=server):
+        sync_connection.run(conn.id)
+    assert len(server.roles) == 2
+
+
+def test_group_roles_follow_renames_and_privacy(app, db, tenant, trainer):
+    from hubra_discord.tasks import sync_connection
+
+    conn = _group_roles_conn(db, tenant)
+    server = GroupRoleServer()
+    with patch.object(api, "bot", side_effect=server):
+        sync_connection.run(conn.id)
+        trainer.name = "Leitung"
+        db.session.commit()
+        sync_connection.run(conn.id)
+        assert server.names() == {"Mods", "Leitung"}
+        assert len(server.roles) == 2
+
+        trainer.visibility = "private"
+        db.session.commit()
+        sync_connection.run(conn.id)
+    assert server.names() == {"Mods"}
+    assert list(server.roles) == [ROLE_OTHER]
+
+
+def test_turning_group_roles_off_deletes_them(app, db, tenant, trainer):
+    from hubra_discord.tasks import sync_connection
+
+    conn = _group_roles_conn(db, tenant)
+    server = GroupRoleServer()
+    with patch.object(api, "bot", side_effect=server):
+        sync_connection.run(conn.id)
+        conn.config = {**conn.config, "group_roles": False}
+        db.session.commit()
+        sync_connection.run(conn.id)
+    assert list(server.roles) == [ROLE_OTHER]
+    db.session.refresh(conn)
+    assert conn.config["auto_group_roles"] == []
+
+
+def test_mapped_groups_keep_their_own_role(app, db, tenant, trainer):
+    from hubra_discord.tasks import sync_connection
+
+    conn = _group_roles_conn(
+        db,
+        tenant,
+        role_map=[{"source": f"group:{trainer.id}", "role_id": ROLE_OTHER}],
+    )
+    server = GroupRoleServer()
+    with patch.object(api, "bot", side_effect=server):
+        sync_connection.run(conn.id)
+    assert list(server.roles) == [ROLE_OTHER]  # no extra role
+
+
+def test_group_roles_need_the_roles_scope(app, db, tenant):
+    from hubra.core import apps
+
+    from hubra_discord.app import handler
+
+    conn = _conn(db, tenant, scopes=("announce",))
+    with pytest.raises(apps.AppError):
+        handler.update_config(conn, {"group_roles": True})
+
+
+def test_joining_the_platform_server_gives_platform_roles(app, db):
+    pytest.importorskip("hubra.core.services.platform_roles")  # Hubra after #149
+    from hubra_discord.tasks import member_joined
+
+    with patch(
+        "hubra.core.services.platform_roles.joined", return_value=True
+    ) as joined:
+        assert member_joined.run("999", "42") == "platform roles"
+    joined.assert_called_once_with("999", "42")

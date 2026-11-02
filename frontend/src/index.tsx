@@ -66,6 +66,7 @@ interface DiscordConfig {
   self_checkin: boolean
   hubra_news: boolean
   maintenance_notices: boolean
+  group_roles: boolean
 }
 
 const MAX_WELCOME = 1500
@@ -110,6 +111,7 @@ function readConfig(c: Connection): DiscordConfig {
     self_checkin: raw.self_checkin ?? true,
     hubra_news: raw.hubra_news ?? false,
     maintenance_notices: raw.maintenance_notices ?? false,
+    group_roles: raw.group_roles ?? false,
   }
 }
 
@@ -180,7 +182,10 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           maintenance_notices: config.maintenance_notices,
         })
       }
-      if (roles) sent.role_map = config.role_map.filter((m) => m.source && m.role_id)
+      if (roles) {
+        sent.role_map = config.role_map.filter((m) => m.source && m.role_id)
+        sent.group_roles = config.group_roles
+      }
       if (commands) {
         sent.poll_buttons = config.poll_buttons
         sent.self_checkin = config.self_checkin
@@ -327,6 +332,15 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
               'Mitglieder, die ihr Discord-Konto verknüpft haben, bekommen die Rolle, solange sie dazugehören. Der Bot kann nur Rollen unterhalb seiner eigenen vergeben.',
             )}
           </Text>
+          <Switch
+            label={t('discord.groupRoles', 'Rolle für jede Gruppe')}
+            description={t(
+              'discord.groupRolesHint',
+              'Der Bot legt für jede offene und sichtbare Gruppe eine Rolle mit ihrem Namen an und hält sie aktuell: umbenennen, löschen, wer drin ist. Private Gruppen bekommen keine, weil auf Discord alle sehen, wer eine Rolle hat. Unten zugeordnete Gruppen behalten ihre Rolle. Ausschalten löscht diese Rollen.',
+            )}
+            checked={config.group_roles}
+            onChange={(e) => set({ group_roles: e.currentTarget.checked })}
+          />
           {config.role_map.map((m, i) => (
             <Group key={i} gap="xs" wrap="nowrap" align="flex-end">
               <Select
