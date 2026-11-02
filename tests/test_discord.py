@@ -224,6 +224,8 @@ def _server(method, path, body=None, **_):
         ]
     if path.endswith(f"/members/{APP_ID}"):
         return {"roles": ["950"]}
+    if path == f"/channels/{CHANNEL}":
+        return {"id": CHANNEL, "name": "news", "type": 0, "permission_overwrites": []}
     raise AssertionError(path)
 
 
@@ -430,7 +432,7 @@ def test_announcement_task_posts_and_records(app, db, tenant):
         send_announcement.run(conn.id, body)
     bot.assert_called_once_with("POST", f"/channels/{CHANNEL}/messages", body)
     event = db.session.query(ConnectedAppEvent).filter_by(action="announced").one()
-    assert event.ok and event.detail == "Hi"
+    assert event.ok and event.detail == f"Hi · channel {CHANNEL}"
 
 
 def test_each_kind_goes_to_its_own_channel_or_the_main_one(app, db, tenant):
@@ -455,6 +457,166 @@ def test_announcement_task_records_a_lost_permission(app, db, tenant):
         send_announcement.run(conn.id, payload("", [{"title": "Hi"}]))
     db.session.refresh(conn)
     assert "permission" in conn.last_error
+
+
+SEND_BITS = api.VIEW_CHANNEL | api.SEND_MESSAGES | api.EMBED_LINKS
+
+
+def _locked_server(method, path, body=None, **_):
+    """The Hubra role may post on the server, but #news denies it."""
+    if path == f"/guilds/{GUILD}/channels":
+        return [{"id": CHANNEL, "name": "news", "type": 0}]
+    if path == f"/channels/{CHANNEL}/messages":
+        raise DiscordError("Discord answered 403 (code 50013)", 403, code=50013)
+    if path == f"/channels/{CHANNEL}":
+        return {
+            "id": CHANNEL,
+            "name": "news",
+            "type": 0,
+            "permission_overwrites": [
+                {"id": GUILD, "type": 0, "allow": "0", "deny": str(api.SEND_MESSAGES)},
+            ],
+        }
+    if path.endswith("/roles"):
+        return [
+            {"id": GUILD, "name": "@everyone", "position": 0, "permissions": "0"},
+            {
+                "id": "950",
+                "name": "Hubra",
+                "position": 5,
+                "permissions": str(SEND_BITS),
+            },
+        ]
+    if path.endswith(f"/members/{APP_ID}"):
+        return {"roles": ["950"]}
+    if path.endswith("/messages"):
+        return {"id": "777"}
+    raise AssertionError(path)
+
+
+def test_a_refused_post_names_the_channel_and_the_permission(app, db, tenant):
+    from hubra_discord.tasks import send_announcement
+
+    conn = _conn(db, tenant)
+    with patch.object(api, "bot", side_effect=_locked_server):
+        send_announcement.run(conn.id, payload("", [{"title": "Hi"}]), "events")
+    db.session.refresh(conn)
+    err = conn.last_error
+    assert '"Hi"' in err and "#news" in err
+    assert "Send Messages" in err and "View Channels" not in err
+    assert "50013 Missing Permissions" in err
+
+
+def test_channel_permissions_follow_discord_rules(app, discord_settings):
+    from hubra_discord.diagnose import ALL, channel_permissions
+
+    channel = {
+        "permission_overwrites": [
+            {"id": GUILD, "type": 0, "allow": "0", "deny": str(api.SEND_MESSAGES)},
+            {"id": "950", "type": 0, "allow": str(api.SEND_MESSAGES), "deny": "0"},
+        ]
+    }
+    with patch.object(api, "bot", side_effect=_locked_server):
+        assert channel_permissions(GUILD, channel) & api.SEND_MESSAGES
+        assert (
+            channel_permissions(
+                GUILD, {"permission_overwrites": channel["permission_overwrites"][:1]}
+            )
+            & api.SEND_MESSAGES
+            == 0
+        )
+
+    def admin(method, path, body=None, **_):
+        if path.endswith("/roles"):
+            return [{"id": "950", "permissions": str(api.ADMINISTRATOR)}]
+        return {"roles": ["950"]}
+
+    with patch.object(api, "bot", side_effect=admin):
+        assert channel_permissions(GUILD, channel) == ALL
+
+
+def test_options_list_channel_problems(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, log_channel_id=CHANNEL)
+    with patch.object(api, "bot", side_effect=_locked_server):
+        data = client.get(
+            f"/api/v1/apps/connections/{conn.id}/options", headers=H
+        ).get_json()
+    assert data["channelProblems"] == [
+        {"channel": "#news", "uses": ["main", "log"], "missing": ["Send Messages"]}
+    ]
+
+
+def test_a_skipped_members_only_event_is_logged(client, db, club_auth, tenant, queued):
+    conn = _conn(db, tenant)
+    client.post(
+        "/api/v1/events/",
+        json={"title": "AGM", "date": "2026-07-04", "type": "Social"},
+        headers=H,
+    )
+    queued.assert_not_called()
+    event = (
+        db.session.query(ConnectedAppEvent)
+        .filter_by(connection_id=conn.id, action="skipped")
+        .one()
+    )
+    assert 'Event "AGM"' in event.detail and "nur für Mitglieder" in event.detail
+
+
+def test_a_switched_off_kind_is_logged(client, db, club_auth, tenant, queued):
+    conn = _conn(db, tenant, announce_polls=False)
+    client.post(
+        "/api/v1/polls/",
+        json={"question": "Pizza?", "options": [{"label": "Yes"}, {"label": "No"}]},
+        headers=H,
+    )
+    queued.assert_not_called()
+    event = (
+        db.session.query(ConnectedAppEvent)
+        .filter_by(connection_id=conn.id, action="skipped")
+        .one()
+    )
+    assert "Neue Umfragen posten" in event.detail
+
+
+def test_errors_go_to_the_log_channel(app, db, tenant):
+    from hubra_discord.tasks import post_log, send_announcement
+
+    conn = _conn(db, tenant, log_channel_id="903")
+    with (
+        patch.object(api, "bot", side_effect=_locked_server),
+        patch.object(post_log, "delay") as delay,
+    ):
+        send_announcement.run(conn.id, payload("", [{"title": "Hi"}]))
+    action, ok, detail = delay.call_args.args[1:]
+    assert action == "announced" and ok is False and "#news" in detail
+
+    with patch.object(api, "bot", side_effect=_locked_server) as bot:
+        post_log.run(conn.id, action, ok, detail)
+    method, path, body = bot.call_args.args
+    assert path == "/channels/903/messages"
+    assert body["embeds"][0]["title"].startswith("❌")
+
+
+def test_successes_reach_the_log_channel_only_when_asked(app, db, tenant):
+    from hubra_discord.tasks import post_log, send_announcement
+
+    conn = _conn(db, tenant, log_channel_id="903")
+    with patch.object(api, "bot"), patch.object(post_log, "delay") as delay:
+        send_announcement.run(conn.id, payload("", [{"title": "Hi"}]))
+    delay.assert_not_called()
+    conn.config = {**conn.config, "log_level": "all"}
+    db.session.commit()
+    with patch.object(api, "bot"), patch.object(post_log, "delay") as delay:
+        send_announcement.run(conn.id, payload("", [{"title": "Hi"}]))
+    assert delay.call_args.args[2] is True
+
+
+def test_the_test_checks_every_channel(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, channels={"events": CHANNEL}, log_channel_id="903")
+    with patch.object(api, "bot", side_effect=_locked_server):
+        resp = client.post(f"/api/v1/apps/connections/{conn.id}/test", headers=H)
+    assert resp.status_code == 502
+    assert "#news" in str(resp.get_json())
 
 
 def test_disconnected_connection_sends_nothing(app, db, tenant):
@@ -1100,14 +1262,24 @@ def test_events_follow_the_club(app, db, tenant):
         public_id = public.id
     fake = FakeDiscord()
     with patch.object(api, "bot", side_effect=fake):
-        assert sync_events.run(conn.id) == {"created": 1, "changed": 0, "deleted": 0}
+        assert sync_events.run(conn.id) == {
+            "created": 1,
+            "changed": 0,
+            "deleted": 0,
+            "members-only left out": 1,
+        }
         (created,) = fake.sent("/scheduled-events")
         assert created["name"] == "Open day"
         assert created["entity_type"] == 3
         assert created["entity_metadata"] == {"location": "Hall"}
         assert created["scheduled_start_time"].startswith(soon.isoformat())
         # Nothing changed: Discord isn't called again.
-        assert sync_events.run(conn.id) == {"created": 0, "changed": 0, "deleted": 0}
+        assert sync_events.run(conn.id) == {
+            "created": 0,
+            "changed": 0,
+            "deleted": 0,
+            "members-only left out": 1,
+        }
         with in_club(tenant):
             db.session.get(ClubEvent, public_id).title = "Open day!"
             db.session.commit()

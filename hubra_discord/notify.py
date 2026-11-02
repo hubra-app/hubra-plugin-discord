@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from hubra.core import apps
 
-from . import api
+from . import api, botlog
 from .api import DiscordError
 
 # Discord's code for "Cannot send messages to this user".
@@ -58,9 +58,18 @@ def deliver(conn, external_id: str, payload: dict) -> bool:
         )
     except DiscordError as exc:
         if exc.status == 403:
-            # Their privacy settings: not the club's problem, nothing to record.
+            # Their privacy settings: not the club's problem, but say so.
+            botlog.skipped(
+                conn,
+                f'Direct message "{item["title"]}"',
+                "the person doesn't accept direct messages from this server "
+                f"(Discord {exc.code or 403})",
+            )
             return False
-        raise apps.AppError(f"Direct message failed: {exc}") from exc
+        from .diagnose import describe
+
+        raise apps.AppError(describe(exc, doing="Direct message")) from exc
+    botlog.log(conn, "dm", True, f'Notification "{item["title"]}"')
     return True
 
 
@@ -96,7 +105,7 @@ def member_joined(conn, user_id: str) -> str:
     try:
         api.dm(user_id, body)
     except DiscordError as exc:
-        if exc.status == 403:
-            return ""  # they don't take direct messages
+        if exc.status == 403:  # they don't take direct messages
+            return "joined; welcome not sent (direct messages closed)"
         raise
     return "welcome sent"

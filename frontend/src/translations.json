@@ -57,7 +57,16 @@
       "maintenanceNotices": "Announce maintenance",
       "maintenanceNoticesHint": "In the main channel: planned maintenance, start and end. Hubra is briefly unavailable then.",
       "groupRoles": "A role for every group",
-      "groupRolesHint": "The bot makes a role named after each open and visible group and keeps it up to date: renames, deletions, who is in it. Private groups get none, since everyone on Discord sees who holds a role. Groups mapped below keep their role. Turning this off deletes these roles."
+      "groupRolesHint": "The bot makes a role named after each open and visible group and keeps it up to date: renames, deletions, who is in it. Private groups get none, since everyone on Discord sees who holds a role. Groups mapped below keep their role. Turning this off deletes these roles.",
+      "channelProblemsTitle": "The bot can't post in every channel",
+      "channelProblem": "{{channel}} ({{uses}}): missing {{perms}}. Give the Hubra role these permissions in the channel settings › Permissions.",
+      "log": "Bot log",
+      "logHint": "Everything the bot does or leaves out is listed under \"Recent activity\" below, with the reason. It can also write it to a channel on your server.",
+      "logChannel": "Log channel",
+      "logNone": "None",
+      "logLevel": "What goes in the log",
+      "logErrors": "Errors only",
+      "logAll": "Everything (also what was left out)"
     }
   },
   "de-CH": {
@@ -118,7 +127,16 @@
       "maintenanceNotices": "Wartungen ankündigen",
       "maintenanceNoticesHint": "Im Hauptkanal: geplante Wartung, Beginn und Ende. Hubra ist dann kurz nicht erreichbar.",
       "groupRoles": "Rolle für jede Gruppe",
-      "groupRolesHint": "Der Bot legt für jede offene und sichtbare Gruppe eine Rolle mit ihrem Namen an und hält sie aktuell: umbenennen, löschen, wer drin ist. Private Gruppen bekommen keine, weil auf Discord alle sehen, wer eine Rolle hat. Unten zugeordnete Gruppen behalten ihre Rolle. Ausschalten löscht diese Rollen."
+      "groupRolesHint": "Der Bot legt für jede offene und sichtbare Gruppe eine Rolle mit ihrem Namen an und hält sie aktuell: umbenennen, löschen, wer drin ist. Private Gruppen bekommen keine, weil auf Discord alle sehen, wer eine Rolle hat. Unten zugeordnete Gruppen behalten ihre Rolle. Ausschalten löscht diese Rollen.",
+      "channelProblemsTitle": "Der Bot kann nicht in alle Kanäle schreiben",
+      "channelProblem": "{{channel}} ({{uses}}): es fehlt {{perms}}. Gib der Hubra-Rolle diese Rechte in den Kanaleinstellungen › Berechtigungen.",
+      "log": "Bot-Protokoll",
+      "logHint": "Alles, was der Bot tut oder auslässt, steht unten unter «Letzte Aktivität», mit dem Grund. Zusätzlich kann er es in einen Kanal auf eurem Server schreiben.",
+      "logChannel": "Protokoll-Kanal",
+      "logNone": "Keiner",
+      "logLevel": "Was ins Protokoll kommt",
+      "logErrors": "Nur Fehler",
+      "logAll": "Alles (auch Ausgelassenes)"
     }
   }
 }

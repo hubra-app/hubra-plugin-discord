@@ -159,7 +159,29 @@ def sync(conn) -> dict:
             del known[key]  # past ones end on their own
     finally:
         save()
+    if config.get("discord_events", True) and not config.get("members_only_events"):
+        # Said in the log, so "my event is missing" has an answer.
+        counts["members-only left out"] = _members_only_ahead()
     return counts
+
+
+def _members_only_ahead() -> int:
+    from sqlalchemy import func
+
+    from hubra.core.models.event import ClubEvent
+
+    today = date.today()
+    return (
+        db.session.scalar(
+            select(func.count(ClubEvent.id)).where(
+                ClubEvent.date >= today,
+                ClubEvent.date <= today + timedelta(days=HORIZON_DAYS),
+                ClubEvent.group_id.is_(None),
+                ClubEvent.is_public.is_(False),
+            )
+        )
+        or 0
+    )
 
 
 def _ahead(key: str, now: datetime) -> bool:

@@ -58,6 +58,10 @@ DEFAULT_CONFIG = {
     # A role for every open or visible group (``roles`` scope), made and
     # kept up by the bot (group_roles.py).
     "group_roles": False,
+    # The bot log on the club's own server (botlog.py): a channel, and
+    # whether it gets only errors or everything the bot does and skips.
+    "log_channel_id": None,
+    "log_level": "errors",
 }
 # Kept by the bot, not set by the club.
 INTERNAL = ("guild_name", "profile_applied", "scheduled_events", "auto_group_roles")
@@ -130,6 +134,40 @@ def missing_permissions(conn) -> list[str]:
         for bit, name in api.PERMISSION_NAMES.items()
         if need & bit and not have & bit
     ]
+
+
+def used_channels(config: dict) -> dict[str, list[str]]:
+    """Channel id → what the bot posts there (main, events, ..., log)."""
+    used: dict[str, list[str]] = {}
+    if config.get("channel_id"):
+        used.setdefault(str(config["channel_id"]), []).append("main")
+    for kind, channel in (config.get("channels") or {}).items():
+        if channel:
+            used.setdefault(str(channel), []).append(kind)
+    if config.get("log_channel_id"):
+        used.setdefault(str(config["log_channel_id"]), []).append("log")
+    return used
+
+
+def channel_problems(conn) -> list[dict]:
+    """Per channel the bot posts in: the permissions it lacks there (the
+    channel's own overrides can take away what the server gives)."""
+    from .diagnose import missing_in_channel
+
+    out = []
+    for channel, uses in used_channels(conn.config or {}).items():
+        try:
+            found = missing_in_channel(conn.external_id, channel)
+        except DiscordError as exc:
+            _log.info("discord: checking channel %s: %s", channel, exc)
+            continue
+        if found is None:
+            out.append(
+                {"channel": f"#{channel}", "uses": uses, "missing": ["channel deleted"]}
+            )
+        elif found[1]:
+            out.append({"channel": found[0], "uses": uses, "missing": found[1]})
+    return out
 
 
 def channel_for(config: dict, kind: str) -> str | None:
@@ -252,6 +290,7 @@ class DiscordApp:
             "roles": roles,
             "sources": sources(),
             "missingPermissions": missing,
+            "channelProblems": channel_problems(conn),
             "grantUrl": grant_url(conn),
         }
 
@@ -311,6 +350,7 @@ class DiscordApp:
 
         needs_server = (
             "channel_id" in config
+            or "log_channel_id" in config
             or "channels" in config
             or "role_map" in config
             or (str(config.get("mention", "")).startswith("role:"))
@@ -337,6 +377,19 @@ class DiscordApp:
             )
         except DiscordError as exc:
             raise apps.AppError(_explain(exc)) from exc
+
+        if "log_channel_id" in config:
+            channel = config["log_channel_id"] or None
+            if channel is not None and str(channel) not in server_channels:
+                raise apps.AppError("That channel isn't a text channel on the server")
+            out["log_channel_id"] = str(channel) if channel else None
+
+        if "log_level" in config:
+            from .botlog import LEVELS
+
+            if config["log_level"] not in LEVELS:
+                raise apps.AppError("The log gets errors or all")
+            out["log_level"] = config["log_level"]
 
         if "channel_id" in config:
             channel = config["channel_id"] or None
@@ -413,26 +466,54 @@ class DiscordApp:
         return out
 
     def test(self, conn):
-        channel = (conn.config or {}).get("channel_id")
-        if not channel:
+        """Post a test message in every channel the bot uses, and say per
+        channel what works and what's missing."""
+        from .diagnose import describe
+
+        used = used_channels(conn.config or {})
+        if not used:
             raise apps.AppError("Pick a channel first")
+        ok, failed = [], []
+        for channel, kinds in used.items():
+            try:
+                api.send(
+                    channel,
+                    {
+                        "embeds": [
+                            {
+                                "title": "✅ Hubra is connected",
+                                "description": "This channel gets: " + ", ".join(kinds),
+                                "color": 0x6D3FD8,
+                            }
+                        ],
+                        "allowed_mentions": {"parse": []},
+                    },
+                )
+                ok.append(f"<#{channel}> ({', '.join(kinds)})")
+            except DiscordError as exc:
+                failed.append(
+                    describe(
+                        exc,
+                        doing=f"Test for {', '.join(kinds)}",
+                        guild_id=conn.external_id,
+                        channel_id=channel,
+                    )
+                )
+        missing = []
         try:
-            api.send(
-                channel,
-                {
-                    "embeds": [
-                        {
-                            "title": "✅ Hubra is connected",
-                            "description": "Announcements will appear here.",
-                            "color": 0x6D3FD8,
-                        }
-                    ],
-                    "allowed_mentions": {"parse": []},
-                },
+            missing = missing_permissions(conn)
+        except DiscordError:
+            pass
+        if missing:
+            failed.append(
+                "On the server the bot lacks "
+                + ", ".join(missing)
+                + "; add the bot again with the link under Details"
             )
-        except DiscordError as exc:
-            raise apps.AppError(_explain(exc)) from exc
-        return "Test message sent"
+        # Hubra records the result in the activity list.
+        if failed:
+            raise apps.AppError("; ".join(failed)[:500])
+        return f"Test sent to {', '.join(ok)}"
 
     def revoke(self, conn):
         from .scheduled import remove_all
@@ -449,11 +530,11 @@ class DiscordApp:
 
 
 def _explain(exc: DiscordError) -> str:
-    if exc.status == 403:
-        return "The bot lacks a permission on the server (channel or role access)"
-    if exc.status == 404:
-        return "The server, channel or role is gone, or the bot was removed"
-    return str(exc)
+    """For answers in the settings (no channel known): Discord's own code
+    and the call, never just "no permission"."""
+    from .diagnose import describe
+
+    return describe(exc)
 
 
 handler = DiscordApp()

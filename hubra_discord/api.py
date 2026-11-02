@@ -44,15 +44,46 @@ PERMISSION_NAMES = {
     CREATE_EVENTS: "Create Events",
 }
 
+CANNOT_DM_CODE = 50007
+
 # Channel types announcements can go to: text and announcement channels.
 TEXT_CHANNELS = (0, 5)
 
 
+# Discord's JSON error codes worth naming (https://discord.com/developers/docs/topics/opcodes-and-status-codes#json).
+ERROR_CODES = {
+    10003: "Unknown Channel",
+    10004: "Unknown Server",
+    10008: "Unknown Message",
+    10011: "Unknown Role",
+    10013: "Unknown User",
+    10070: "Unknown Scheduled Event",
+    50001: "Missing Access",
+    50007: "Cannot send messages to this user",
+    50013: "Missing Permissions",
+    50035: "Invalid Form Body",
+}
+
+
 class DiscordError(Exception):
-    def __init__(self, message: str, status: int | None = None, retry_after=None):
+    def __init__(
+        self,
+        message: str,
+        status: int | None = None,
+        retry_after=None,
+        code: int | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.retry_after = retry_after
+        # Discord's own error code (50013 Missing Permissions, ...).
+        self.code = code
+        # The call that failed, set by ``bot()``: "POST /channels/1/messages".
+        self.call = ""
+
+    @property
+    def code_name(self) -> str:
+        return ERROR_CODES.get(self.code or 0, "")
 
     @property
     def retryable(self) -> bool:
@@ -79,18 +110,22 @@ def _open(request: urllib.request.Request, timeout: float):
     except urllib.error.HTTPError as exc:
         retry_after = None
         detail = ""
+        code = None
         try:
             data = json.loads(exc.read() or b"{}")
             detail = str(data.get("message", ""))
+            if isinstance(data.get("code"), int):
+                code = data["code"]
             if exc.code == 429:
                 retry_after = float(data.get("retry_after"))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, AttributeError):
             pass
-        raise DiscordError(
-            f"Discord answered {exc.code}{': ' + detail if detail else ''}",
-            exc.code,
-            retry_after,
-        ) from exc
+        text = f"Discord answered {exc.code}"
+        if code:
+            text += f" (code {code})"
+        if detail:
+            text += f": {detail}"
+        raise DiscordError(text, exc.code, retry_after, code) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise DiscordError(f"Discord unreachable: {exc}") from exc
     return json.loads(body) if body else None
@@ -125,6 +160,7 @@ def bot(
         try:
             return _open(request, timeout)
         except DiscordError as exc:
+            exc.call = f"{method} {path}"
             pause = exc.retry_after
             if exc.status != 429 or pause is None or waited + pause > wait:
                 raise

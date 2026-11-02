@@ -14,7 +14,7 @@ from hubra.core import apps
 from hubra.core.extensions import db
 from hubra.core.tasks import celery_app
 
-from . import api, roles
+from . import api, botlog, roles
 from .api import DiscordError
 
 _log = logging.getLogger(__name__)
@@ -45,11 +45,60 @@ def _connection(connection_id: int, scope: str | tuple[str, ...]):
         yield conn
 
 
-def _failed(conn, action: str, exc: DiscordError) -> None:
-    from .app import _explain
+def _failed(conn, action: str, exc: DiscordError, **context) -> None:
+    """Log a failure with what was tried, where, and what's missing."""
+    from .diagnose import describe
 
-    apps.record(conn, action, False, _explain(exc))
+    try:
+        text = describe(exc, guild_id=conn.external_id, **context)
+    except Exception:  # noqa: BLE001  the plain error is better than none
+        _log.warning("discord: could not explain %s", exc, exc_info=True)
+        text = str(exc)
+    botlog.log(conn, action, False, text)
     db.session.commit()
+
+
+def _title(body: dict) -> str:
+    embeds = body.get("embeds") or [{}]
+    return str(embeds[0].get("title") or body.get("content") or "")[:120]
+
+
+def _posted(conn, action: str, body: dict, channel: str, sent) -> None:
+    where = f"channel {channel}"
+    if isinstance(sent, dict) and sent.get("id"):
+        # A link straight to the message on Discord.
+        where = (
+            f"https://discord.com/channels/{conn.external_id}/{channel}/{sent['id']}"
+        )
+    botlog.log(conn, action, True, f"{_title(body)} · {where}")
+
+
+def _send(self, conn, channel: str, body: dict, action: str, what: str) -> bool:
+    """Post *body* in *channel*, log the result, retry what can be retried."""
+    from hubra.core.tenant.context import current_tenant
+
+    from .profile import brand
+
+    try:
+        sent = api.send(channel, brand(body, current_tenant(), conn.config or {}))
+    except DiscordError as exc:
+        if not exc.retryable:  # no access, channel gone: retrying won't help
+            _failed(
+                conn,
+                action,
+                exc,
+                doing=f'Posting {what} "{_title(body)}"',
+                channel_id=channel,
+            )
+            return False
+        if self.request.retries >= (self.max_retries or 0):
+            _failed(conn, action, exc, doing=f'Posting "{_title(body)}"')
+            return False
+        countdown = exc.retry_after or 2 ** (self.request.retries + 2)
+        raise self.retry(exc=exc, countdown=countdown) from exc
+    _posted(conn, action, body, channel, sent)
+    db.session.commit()
+    return True
 
 
 @celery_app.task(
@@ -68,22 +117,14 @@ def send_announcement(
             return
         channel = channel_for(conn.config or {}, kind or "")
         if not channel:
+            botlog.skipped(
+                conn,
+                _title(body) or (kind or "message"),
+                "no channel picked (Settings › Verbundene Apps › Discord)",
+            )
+            db.session.commit()
             return
-        from hubra.core.tenant.context import current_tenant
-
-        from .profile import brand
-
-        try:
-            api.send(channel, brand(body, current_tenant(), conn.config or {}))
-        except DiscordError as exc:
-            if not exc.retryable:  # no access, channel gone: retrying won't help
-                _failed(conn, "announced", exc)
-                return
-            countdown = exc.retry_after or 2 ** (self.request.retries + 2)
-            raise self.retry(exc=exc, countdown=countdown) from exc
-        title = (body.get("embeds") or [{}])[0].get("title", "")
-        apps.record(conn, "announced", True, title)
-        db.session.commit()
+        _send(self, conn, channel, body, "announced", kind or "")
 
 
 def _role_task(self, connection_id: int, action, *args):
@@ -94,7 +135,7 @@ def _role_task(self, connection_id: int, action, *args):
             result = action(conn, *args)
         except DiscordError as exc:
             if not exc.retryable:
-                _failed(conn, "roles", exc)
+                _failed(conn, "roles", exc, doing="Updating roles")
                 return None
             countdown = exc.retry_after or 2 ** (self.request.retries + 2)
             raise self.retry(exc=exc, countdown=countdown) from exc
@@ -110,14 +151,14 @@ def _sync_one(conn, member_id: int):
         return None
     detail = roles.sync_member(conn, member)
     if detail:
-        apps.record(conn, "roles", True, detail)
+        botlog.log(conn, "roles", True, detail)
     return detail
 
 
 def _remove_all(conn, discord_user_id: str):
     detail = roles.apply(conn, discord_user_id, set(), "account unlinked")
     if detail:
-        apps.record(conn, "roles", True, detail)
+        botlog.log(conn, "roles", True, detail)
     return detail
 
 
@@ -176,15 +217,15 @@ def apply_profile(self, connection_id: int, force: bool = False) -> None:
             problems = apply(conn, tenant, force=force)
         except DiscordError as exc:
             if not exc.retryable:
-                _failed(conn, "profile", exc)
+                _failed(conn, "profile", exc, doing="Setting the bot's name and logo")
                 return
             raise self.retry(exc=exc, countdown=exc.retry_after or 60) from exc
         if problems is None:
             return  # nothing changed
         if problems:
-            apps.record(conn, "profile", False, "; ".join(problems)[:500])
+            botlog.log(conn, "profile", False, "; ".join(problems)[:500])
         else:
-            apps.record(conn, "profile", True, "Club look applied")
+            botlog.log(conn, "profile", True, "Club look applied")
         db.session.commit()
 
 
@@ -217,22 +258,10 @@ def send_to_group_channel(self, connection_id: int, group_id: int, body: dict) -
             return
         channel = channel_for_group(conn, group_id)
         if not channel:
+            botlog.skipped(conn, _title(body), f"group {group_id} has no channel")
+            db.session.commit()
             return
-        from hubra.core.tenant.context import current_tenant
-
-        from .profile import brand
-
-        try:
-            api.send(channel, brand(body, current_tenant(), conn.config or {}))
-        except DiscordError as exc:
-            if not exc.retryable:
-                _failed(conn, "announced", exc)
-                return
-            countdown = exc.retry_after or 2 ** (self.request.retries + 2)
-            raise self.retry(exc=exc, countdown=countdown) from exc
-        title = (body.get("embeds") or [{}])[0].get("title", "")
-        apps.record(conn, "announced", True, title)
-        db.session.commit()
+        _send(self, conn, channel, body, "announced", "in the group channel")
 
 
 @celery_app.task(name="hubra_discord.tasks.sync_events", bind=True, max_retries=3)
@@ -248,11 +277,11 @@ def sync_events(self, connection_id: int) -> dict | None:
         except DiscordError as exc:
             db.session.commit()  # keep what was done
             if not exc.retryable:
-                _failed(conn, "events", exc)
+                _failed(conn, "events", exc, doing="Updating the server's Events list")
                 return None
             raise self.retry(exc=exc, countdown=exc.retry_after or 60) from exc
         if any(counts.values()):
-            apps.record(
+            botlog.log(
                 conn,
                 "events",
                 True,
@@ -297,10 +326,47 @@ def member_joined(self, guild_id: str, user_id: str) -> str:
             done = handle(conn, user_id)
         except DiscordError as exc:
             if not exc.retryable:
-                _failed(conn, "joined", exc)
+                _failed(conn, "joined", exc, doing="Welcoming a new server member")
                 return ""
             raise self.retry(exc=exc, countdown=exc.retry_after or 30) from exc
         if done:
-            apps.record(conn, "joined", True, done[:500])
+            botlog.log(conn, "joined", True, done[:500])
         db.session.commit()
         return done
+
+
+@celery_app.task(name="hubra_discord.tasks.post_log", bind=True, max_retries=3)
+def post_log(self, connection_id: int, action: str, ok: bool, detail: str) -> None:
+    """One entry of the bot log in the club's log channel on Discord."""
+    from hubra.core.models.connected_app import ConnectedApp
+
+    conn = db.session.get(ConnectedApp, connection_id)
+    if conn is None or conn.status != "active":
+        return
+    channel = (conn.config or {}).get("log_channel_id")
+    if not channel:
+        return
+    body = {
+        "embeds": [botlog.embed(action, ok, detail)],
+        "allowed_mentions": {"parse": []},
+    }
+    try:
+        api.send(channel, body)
+    except DiscordError as exc:
+        if exc.retryable and self.request.retries < (self.max_retries or 0):
+            raise self.retry(exc=exc, countdown=exc.retry_after or 30) from exc
+        from .diagnose import describe
+
+        try:
+            text = describe(
+                exc,
+                doing="Writing to the log channel",
+                guild_id=conn.external_id,
+                channel_id=channel,
+            )
+        except Exception:  # noqa: BLE001
+            text = f"Writing to the log channel failed: {exc}"
+        # Straight to Hubra's list, never back to the channel (no loop).
+        apps.record(conn, "log", False, text)
+        _log.warning("discord club=%s log channel: %s", conn.tenant_id, text)
+        db.session.commit()

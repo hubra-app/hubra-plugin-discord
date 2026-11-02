@@ -9,7 +9,8 @@ to the person who clicked; nobody else sees who voted for what.
 
 from __future__ import annotations
 
-from hubra.core import apps
+
+from . import botlog
 from hubra.core.errors import ApiError
 from hubra.core.extensions import db
 
@@ -84,7 +85,7 @@ def handle(conn, member, custom_id: str) -> dict:
             }.get(exc.code, exc.message)
         )
     choice = options[index].label
-    apps.record(conn, "voted", True, f"#{poll.id}")  # never who or what
+    botlog.log(conn, "voted", True, f"#{poll.id}")  # never who or what
     db.session.commit()
     if for_member is not None:
         from hubra.core.models.member import Member

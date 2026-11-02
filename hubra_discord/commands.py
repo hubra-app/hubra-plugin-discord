@@ -15,6 +15,8 @@ from datetime import date
 from sqlalchemy import select
 
 from hubra.core import apps
+
+from . import botlog
 from hubra.core.errors import ApiError
 from hubra.core.extensions import db
 
@@ -262,7 +264,7 @@ def _registration(conn, member, event_id: int, register: bool) -> dict:
             "CONFLICT": f"Du bist bereits für **{event.title}** angemeldet.",
             "NOT_FOUND": "Du bist nicht angemeldet.",
         }.get(exc.code, exc.message)
-    apps.record(
+    botlog.log(
         conn,
         "registration",
         True,

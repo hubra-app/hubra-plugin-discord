@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.5.0
+
+- **Bot log.** Everything the bot does, and everything it leaves out, is
+  now in the connection's activity list (Settings › Verbundene Apps ›
+  Discord › Details) with the reason: "Event "AGM": members-only event;
+  switch on "Auch Anlässe nur für Mitglieder"", ""Neue Umfragen posten" is
+  off", "no channel picked", "only for some groups, and none has a
+  channel", members-only events left out of the server's Events list,
+  direct messages a person doesn't accept, slash commands and their
+  crashes. Before, these were skipped without a trace, which looked like
+  "the bot posts nothing". Successful posts link to the message on Discord.
+- **Log channel** on the club's own server (new "Bot-Protokoll" section):
+  pick a channel and whether it gets errors only or everything. A broken
+  log channel is noted in Hubra and never loops.
+- **Specific permission errors.** Instead of "The bot lacks a permission",
+  the log names the post, the channel and the missing permissions, worked
+  out from the bot's roles and the channel's own overrides, plus Discord's
+  error code and the call, e.g. `Posting events "Summer party" failed in
+  #news: the bot lacks Send Messages. Give the Hubra role these permissions
+  in the channel's settings … (Discord 50013 Missing Permissions, POST
+  /channels/…/messages)`. Role, Events-list and token errors say what to fix
+  too. Every entry also goes to the server log (`hubra_discord` logger) with
+  the club and Discord server.
+- The settings show per channel the bot posts in which permissions it lacks
+  there, and **Testen** now posts in every channel in use (main, per kind,
+  log) and reports each one.
+- A post that still fails after all retries is logged instead of vanishing.
+
 ## 2.4.0
 
 - **A role for every group** (Settings › Verbundene Apps › Discord › Rollen:
