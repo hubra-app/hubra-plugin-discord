@@ -61,10 +61,16 @@ COMMANDS = [
 ]
 
 
+def all_commands() -> list[dict]:
+    from .personal import COMMANDS as PERSONAL
+
+    return COMMANDS + PERSONAL
+
+
 def register() -> None:
     """Install the commands for the Hubra application (all servers)."""
     app_id = api.config("client_id")
-    api.bot("PUT", f"/applications/{app_id}/commands", COMMANDS)
+    api.bot("PUT", f"/applications/{app_id}/commands", all_commands())
 
 
 def register_after_commit(conn) -> None:
@@ -139,17 +145,42 @@ def handle(conn, interaction: dict) -> dict:
             return reply(_link_hint())
         if name == "hubra":
             return _status(conn, member)
+        if name in ("rechnungen", "trainings", "profil"):
+            return _personal(conn, member, name)
         return reply("Unbekannter Befehl.")
 
     if kind == 3:
         if not apps.has_scope(conn, "commands"):
-            return reply("Anmelden über Discord ist für diesen Verein ausgeschaltet.")
-        action, _, raw = str(data.get("custom_id", "")).partition(":")
+            return reply("Buttons sind für diesen Verein ausgeschaltet.")
+        custom_id = str(data.get("custom_id", ""))
+        action, _, raw = custom_id.partition(":")
         if action in ("register", "unregister") and raw.isdigit():
             return _registration(conn, member, int(raw), action == "register")
+        if action == "vote":
+            from .polls import handle as vote
+
+            return vote(conn, member, custom_id)
+        if action == "attend":
+            from .personal import attend
+
+            return attend(conn, member, custom_id)
         return reply("Diese Schaltfläche gilt nicht mehr.")
 
     return reply("Das kann Hubra nicht.")
+
+
+def _personal(conn, member, name: str) -> dict:
+    from . import personal
+
+    if not apps.has_scope(conn, "commands"):
+        return reply("Befehle sind für diesen Verein ausgeschaltet.")
+    if member is None:
+        return reply(_link_hint())
+    if name == "rechnungen":  # like /finance/invoices/mine: one's own, always
+        return personal.invoices(member)
+    if name == "trainings":
+        return personal.trainings(conn, member)
+    return personal.profile(member)
 
 
 def _events(conn, member) -> dict:

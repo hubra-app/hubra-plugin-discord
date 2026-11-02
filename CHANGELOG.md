@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.2.0
+
+Needs a Hubra with app notification channels, `event.changed` and module
+processes (the release after 2026-11-02). On an older Hubra the plugin still
+loads; DMs, Discord events and the welcome message stay off.
+
+- Notifications by direct message: members turn Discord on per topic under
+  Mein Konto › Benachrichtigungen (new scope "Direktnachrichten").
+- The club's events in the server's Events list for the next 60 days, kept
+  in step when an event changes or is deleted (scope "Discord-Events").
+  Public events only unless the server is for members; group events stay out.
+- Private channels per group the club picks (scope "Gruppenkanäle"): the
+  bot makes a channel and a role, and the role follows the group. The
+  group's events, reminders and polls go to its channel.
+- Vote on polls with buttons under the announcement, with the app's rules
+  (eligibility, proxies, changing a vote).
+- `/rechnungen`, `/trainings` (check in or excuse yourself from an hour
+  before the start) and `/profil`, answered only to the person.
+- A welcome message for new people on the server who haven't linked yet,
+  with an optional own text; linked members get their roles on joining.
+  Needs the platform's `discord-gateway` process.
+- The settings show which permissions the bot still lacks for the scopes
+  and link to adding it again, which updates its role.
+
 ## 2.1.0
 
 - The bot appears as the club on the club's server: the club's name as its

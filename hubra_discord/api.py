@@ -21,12 +21,28 @@ API = "https://discord.com/api/v10"
 USER_AGENT = "DiscordBot (https://hubra.club, 2)"
 
 # Permission bits the bot asks for, by scope (never Administrator).
+ADMINISTRATOR = 1 << 3
+MANAGE_CHANNELS = 1 << 4
 VIEW_CHANNEL = 1 << 10
 SEND_MESSAGES = 1 << 11
 EMBED_LINKS = 1 << 14
+READ_MESSAGE_HISTORY = 1 << 16
 MANAGE_ROLES = 1 << 28
 # The bot's own nickname per server (the club's name).
 CHANGE_NICKNAME = 1 << 26
+# Scheduled events the bot made itself (create, edit, delete).
+CREATE_EVENTS = 1 << 44
+
+PERMISSION_NAMES = {
+    MANAGE_CHANNELS: "Manage Channels",
+    VIEW_CHANNEL: "View Channels",
+    SEND_MESSAGES: "Send Messages",
+    EMBED_LINKS: "Embed Links",
+    READ_MESSAGE_HISTORY: "Read Message History",
+    MANAGE_ROLES: "Manage Roles",
+    CHANGE_NICKNAME: "Change Nickname",
+    CREATE_EVENTS: "Create Events",
+}
 
 # Channel types announcements can go to: text and announcement channels.
 TEXT_CHANNELS = (0, 5)
@@ -183,3 +199,67 @@ def send(channel_id: str, body: dict) -> dict:
 
 def leave(guild_id: str) -> None:
     bot("DELETE", f"/users/@me/guilds/{guild_id}")
+
+
+def guild_permissions(guild_id: str) -> int:
+    """The bot's permissions on the server (its roles and @everyone)."""
+    me = member(guild_id, config("client_id")) or {}
+    have = set(me.get("roles", [])) | {str(guild_id)}
+    bits = 0
+    for role in roles(guild_id):
+        if role["id"] in have:
+            bits |= int(role.get("permissions") or 0)
+    return bits
+
+
+def dm(user_id: str, body: dict) -> dict:
+    """A direct message from the bot. Discord only allows it to someone who
+    shares a server with the bot and allows DMs from that server."""
+    channel = bot("POST", "/users/@me/channels", {"recipient_id": str(user_id)})
+    return send(channel["id"], body)
+
+
+def create_role(guild_id: str, name: str, reason: str) -> dict:
+    return bot(
+        "POST",
+        f"/guilds/{guild_id}/roles",
+        {"name": name[:100], "mentionable": False, "hoist": False},
+        reason=reason,
+    )
+
+
+def create_channel(guild_id: str, body: dict, reason: str) -> dict:
+    return bot("POST", f"/guilds/{guild_id}/channels", body, reason=reason)
+
+
+def channel(channel_id: str) -> dict | None:
+    try:
+        return bot("GET", f"/channels/{channel_id}")
+    except DiscordError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def edit_channel(channel_id: str, body: dict, reason: str) -> dict:
+    return bot("PATCH", f"/channels/{channel_id}", body, reason=reason)
+
+
+def create_event(guild_id: str, body: dict) -> dict:
+    return bot("POST", f"/guilds/{guild_id}/scheduled-events", body)
+
+
+def edit_event(guild_id: str, event_id: str, body: dict) -> dict:
+    return bot("PATCH", f"/guilds/{guild_id}/scheduled-events/{event_id}", body)
+
+
+def delete_event(guild_id: str, event_id: str) -> None:
+    try:
+        bot("DELETE", f"/guilds/{guild_id}/scheduled-events/{event_id}")
+    except DiscordError as exc:
+        if exc.status != 404:  # already gone
+            raise
+
+
+def gateway_url() -> str:
+    return (bot("GET", "/gateway/bot") or {}).get("url") or "wss://gateway.discord.gg"

@@ -4,9 +4,11 @@
 
 A plugin for [Hubra](https://hubra.club). The Hubra bot on a club's Discord server: announcements of new events, posts,
 polls and reminders (each kind in its own channel if the club wants), Discord roles that follow the club's groups, functions and tiers,
-and event sign-ups with buttons and slash commands.
+private channels per group, the club's events in the server's Events list, event sign-ups and poll votes with
+buttons, `/rechnungen`, `/trainings` (with check-in) and `/profil`, notifications by direct message for members who
+want them, and a welcome message for new people on the server.
 
-**Version** 2.0.0 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`
+**Version** 2.2.0 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`
 
 ## Install
 
@@ -17,8 +19,14 @@ the Hubra project key). Clubs then switch it on under Einstellungen → Module
 
 The bot is one Discord application for the whole platform; its keys are
 platform settings (manage › Platform settings › Discord), stored encrypted. Setup steps are in Hubra's
-`docs/discord.md`. The bot asks only for View Channels, Send Messages, Embed
-Links and (with roles) Manage Roles, never Administrator.
+`docs/discord.md`. The bot asks only for what the club's chosen scopes need
+(View Channels, Send Messages, Embed Links; Manage Roles for roles; Manage
+Channels and Read Message History for group channels; Create Events for Discord
+events; Change Nickname for the club look), never Administrator.
+
+The welcome message needs the platform's gateway process (`flask modules run
+discord-gateway`: docker compose profile `discord`, or the k3s Deployment
+`discord-gateway`) and the Server Members intent in the Developer Portal.
 
 ## Develop
 
