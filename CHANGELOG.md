@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.1
+
+- A maintenance window for one club (or some clubs) now also pauses that
+  club's Discord commands and buttons, not only platform-wide maintenance.
+
 ## 2.3.0
 
 Needs a Hubra with the platform bot (``hubra.core.services.platform_bot``,

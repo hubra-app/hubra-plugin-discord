@@ -1524,6 +1524,33 @@ def test_club_commands_wait_during_maintenance(client, db, tenant):
     assert "aktualisiert" in resp.get_json()["data"]["content"]
 
 
+def test_a_window_for_this_club_pauses_its_commands(client, db, tenant):
+    from datetime import datetime, timedelta, timezone
+
+    from hubra.core.services import maintenance
+
+    _conn(db, tenant)
+    now = datetime.now(timezone.utc)
+    window = maintenance.schedule(
+        now + timedelta(minutes=1),
+        now + timedelta(hours=1),
+        "Umzug",
+        tenant_ids=[tenant.id],
+        notice_hours=0,
+    )
+    window_id = window["id"] if isinstance(window, dict) else window.id
+    try:
+        with patch.object(
+            maintenance,
+            "_running",
+            lambda w, at: w["starts_at"] <= at + timedelta(minutes=2) < w["ends_at"],
+        ):
+            resp = _signed(client, _command("events"))
+    finally:
+        maintenance.cancel(window_id)
+    assert "aktualisiert" in resp.get_json()["data"]["content"]
+
+
 def test_hubra_notices_only_when_the_club_wants_them(app, db, tenant, queued):
     from hubra.core.tenant.context import in_club
 
