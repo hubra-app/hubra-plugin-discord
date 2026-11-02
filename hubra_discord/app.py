@@ -51,6 +51,10 @@ DEFAULT_CONFIG = {
     "welcome_text": "",
     # /trainings: members check in and excuse themselves.
     "self_checkin": True,
+    # Hubra's own notices in the main channel (platform.py): new versions,
+    # and planned or running maintenance.
+    "hubra_news": False,
+    "maintenance_notices": False,
 }
 # Kept by the bot, not set by the club.
 INTERNAL = ("guild_name", "profile_applied", "scheduled_events")
@@ -67,6 +71,8 @@ BOOLS = (
     "group_announce",
     "welcome_dm",
     "self_checkin",
+    "hubra_news",
+    "maintenance_notices",
 )
 MAX_ROLE_MAP = 50
 
@@ -249,6 +255,11 @@ class DiscordApp:
         from .notify import deliver
 
         return deliver(conn, external_id, payload)
+
+    def platform_notice(self, conn, kind, data):
+        from .platform import platform_notice
+
+        return platform_notice(conn, kind, data)
 
     def update_config(self, conn, config):
         from .roles import sources

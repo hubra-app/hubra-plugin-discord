@@ -51,7 +51,11 @@
       "welcomeDmHint": "Whoever joins the server and hasn't linked yet gets a message with the link to link up. Needs the platform's gateway service.",
       "welcomeText": "Welcome text",
       "welcomeTextHint": "Leave empty for the default text. {club} becomes the club's name, {link} the link to link up.",
-      "welcomeDefault": "The default (German): Willkommen auf dem Discord-Server von {club}! 👋 Bist du Mitglied? Verknüpfe dein Discord-Konto mit Hubra …"
+      "welcomeDefault": "The default (German): Willkommen auf dem Discord-Server von {club}! 👋 Bist du Mitglied? Verknüpfe dein Discord-Konto mit Hubra …",
+      "hubraNews": "Announce new Hubra versions",
+      "hubraNewsHint": "In the main channel, with the main changes.",
+      "maintenanceNotices": "Announce maintenance",
+      "maintenanceNoticesHint": "In the main channel: planned maintenance, start and end. Hubra is briefly unavailable then."
     }
   },
   "de-CH": {
@@ -106,7 +110,11 @@
       "welcomeDmHint": "Wer dem Server beitritt und noch nicht verknüpft ist, bekommt eine Nachricht mit dem Link zum Verknüpfen. Braucht den Gateway-Dienst der Plattform.",
       "welcomeText": "Begrüssungstext",
       "welcomeTextHint": "Leer lassen für den Standardtext. {club} wird zum Vereinsnamen, {link} zum Link fürs Verknüpfen.",
-      "welcomeDefault": "Willkommen auf dem Discord-Server von {club}! 👋 Bist du Mitglied? Verknüpfe dein Discord-Konto mit Hubra, dann bekommst du deine Rollen und Kanäle automatisch: {link}"
+      "welcomeDefault": "Willkommen auf dem Discord-Server von {club}! 👋 Bist du Mitglied? Verknüpfe dein Discord-Konto mit Hubra, dann bekommst du deine Rollen und Kanäle automatisch: {link}",
+      "hubraNews": "Neue Hubra-Versionen ankündigen",
+      "hubraNewsHint": "Im Hauptkanal, mit den wichtigsten Neuerungen.",
+      "maintenanceNotices": "Wartungen ankündigen",
+      "maintenanceNoticesHint": "Im Hauptkanal: geplante Wartung, Beginn und Ende. Hubra ist dann kurz nicht erreichbar."
     }
   }
 }

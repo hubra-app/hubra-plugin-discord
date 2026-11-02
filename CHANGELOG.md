@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.3.0
+
+Needs a Hubra with the platform bot (``hubra.core.services.platform_bot``,
+the release after 2026-11-02). On an older Hubra everything below stays off.
+
+- Clicks and commands on the platform's own Discord server go to Hubra's
+  platform bot: Approve / Reject on club requests, Acknowledge / Silence on
+  alerts, `/plattform` and `/wartung` for platform admins.
+- Clubs can opt in to Hubra's own notices in the main channel: new Hubra
+  versions with their main changes ("Neue Hubra-Versionen ankündigen") and
+  planned, started, ended or cancelled maintenance ("Wartungen
+  ankündigen"). Both off by default.
+- During maintenance, club commands answer that Hubra is being updated.
+
 ## 2.2.0
 
 Needs a Hubra with app notification channels, `event.changed` and module

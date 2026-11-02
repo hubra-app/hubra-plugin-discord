@@ -2,8 +2,9 @@
 
 Discord calls this for every slash command and button click on any server
 the Hubra bot is on. Nothing is trusted before the Ed25519 signature with
-the application's public key checks out; then the server must be connected
-to a club (``hubra.core.apps``) that has the Discord module on.
+the application's public key checks out. Clicks and commands for the
+platform's own server go to core's platform bot; otherwise the server must
+be connected to a club (``hubra.core.apps``) that has the Discord module on.
 """
 
 from __future__ import annotations
@@ -62,6 +63,29 @@ def interactions():
 
     if interaction.get("type") == 1:  # Discord checking the endpoint
         return jsonify({"type": 1}), 200
+
+    # The platform's own server: Hubra's admins (core's platform bot).
+    try:
+        from hubra.core.services import platform_bot
+    except ImportError:  # an older Hubra without it
+        platform_bot = None
+    if platform_bot is not None and platform_bot.is_platform_interaction(interaction):
+        return jsonify(platform_bot.handle(interaction)), 200
+
+    # Interactions pass the maintenance gate (so /wartung ende works);
+    # club commands wait until the update is done.
+    try:
+        from hubra.core.services import maintenance
+
+        if maintenance.is_active():
+            return jsonify(
+                reply(
+                    "Hubra wird gerade aktualisiert. Bitte versuche es in ein paar "
+                    "Minuten wieder."
+                )
+            ), 200
+    except ImportError:
+        pass
 
     guild_id = interaction.get("guild_id")
     conn = apps.active("discord", guild_id) if guild_id else None

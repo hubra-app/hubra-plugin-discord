@@ -6,9 +6,10 @@ A plugin for [Hubra](https://hubra.club). The Hubra bot on a club's Discord serv
 polls and reminders (each kind in its own channel if the club wants), Discord roles that follow the club's groups, functions and tiers,
 private channels per group, the club's events in the server's Events list, event sign-ups and poll votes with
 buttons, `/rechnungen`, `/trainings` (with check-in) and `/profil`, notifications by direct message for members who
-want them, and a welcome message for new people on the server.
+want them, a welcome message for new people on the server, and (opt-in) Hubra's own release and maintenance notices.
+On the platform's own server it hands clicks and commands to Hubra's platform bot (club requests, alerts, `/plattform`, `/wartung`).
 
-**Version** 2.2.0 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`
+**Version** 2.3.0 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`
 
 ## Install
 
