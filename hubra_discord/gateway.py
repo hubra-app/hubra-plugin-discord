@@ -90,7 +90,9 @@ class WebSocket:
         parts = urllib.parse.urlsplit(url)
         host, port = parts.hostname, parts.port or 443
         raw = socket.create_connection((host, port), timeout=timeout)
-        self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.sock = context.wrap_socket(raw, server_hostname=host)
         self.lock = threading.Lock()
         key = base64.b64encode(os.urandom(16)).decode()
         path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
