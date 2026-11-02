@@ -1486,3 +1486,74 @@ def test_linked_member_joining_gets_roles(app, db, tenant, trainer, seeded_db):
     with patch.object(api, "bot", side_effect=server):
         done = member_joined.run(GUILD, "42")
     assert "+Trainer" in done
+
+
+# ── The platform's own server and Hubra's notices ────────────────────────────
+
+
+def test_platform_clicks_go_to_the_platform_bot(client, db, tenant):
+    from hubra.core.services import platform_bot
+
+    click = {
+        "type": 3,
+        "guild_id": "999",
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": "p:al:ack:relay_down"},
+    }
+    with (
+        patch.object(platform_bot, "guild_id", return_value="999"),
+        patch.object(
+            platform_bot, "handle", return_value={"type": 4, "data": {"content": "ok"}}
+        ) as handle,
+    ):
+        data = _signed(client, click).get_json()
+    handle.assert_called_once()
+    assert data["data"]["content"] == "ok"
+
+
+def test_club_commands_wait_during_maintenance(client, db, tenant):
+    from hubra.core.services import maintenance
+
+    _conn(db, tenant)
+    maintenance.turn_on("Update", 10)
+    try:
+        resp = _signed(client, _command("events"))
+    finally:
+        maintenance.turn_off()
+    assert resp.status_code == 200
+    assert "aktualisiert" in resp.get_json()["data"]["content"]
+
+
+def test_hubra_notices_only_when_the_club_wants_them(app, db, tenant, queued):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.platform import notice_embed, platform_notice
+
+    off = _conn(db, tenant)
+    with in_club(tenant):
+        assert platform_notice(off, "release", {"version": "1.2.3"}) is False
+        off.config = {**off.config, "hubra_news": True}
+        db.session.commit()
+        assert platform_notice(off, "release", {"version": "1.2.3"}) is True
+        # Maintenance has its own switch.
+        assert platform_notice(off, "maintenance_started", {}) is False
+        assert platform_notice(off, "something_else", {}) is False
+        embed = notice_embed(
+            "maintenance_planned",
+            {"start": "2030-11-05T21:00:00+00:00", "minutes": 30, "message": "Update"},
+        )
+    queued.assert_called_once()
+    conn_id, body, kind = queued.call_args.args
+    assert conn_id == off.id and kind == "hubra"
+    assert body["embeds"][0]["title"] == "Hubra 1.2.3"
+    assert body["allowed_mentions"] == {"parse": []}
+    assert "05.11.2030 22:00" in embed["description"]
+    assert "30 Minuten" in embed["description"]
+
+
+def test_platform_notice_toggles_are_saved(app, db, tenant):
+    from hubra_discord.app import BOOLS, DEFAULT_CONFIG
+
+    for key in ("hubra_news", "maintenance_notices"):
+        assert key in BOOLS
+        assert DEFAULT_CONFIG[key] is False

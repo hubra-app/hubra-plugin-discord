@@ -64,6 +64,8 @@ interface DiscordConfig {
   welcome_dm: boolean
   welcome_text: string
   self_checkin: boolean
+  hubra_news: boolean
+  maintenance_notices: boolean
 }
 
 const MAX_WELCOME = 1500
@@ -106,6 +108,8 @@ function readConfig(c: Connection): DiscordConfig {
     welcome_dm: raw.welcome_dm ?? false,
     welcome_text: raw.welcome_text ?? '',
     self_checkin: raw.self_checkin ?? true,
+    hubra_news: raw.hubra_news ?? false,
+    maintenance_notices: raw.maintenance_notices ?? false,
   }
 }
 
@@ -172,6 +176,8 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           announce_reminders: config.announce_reminders,
           members_only_events: config.members_only_events,
           mention: config.mention,
+          hubra_news: config.hubra_news,
+          maintenance_notices: config.maintenance_notices,
         })
       }
       if (roles) sent.role_map = config.role_map.filter((m) => m.source && m.role_id)
@@ -277,6 +283,24 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
             )}
             checked={config.members_only_events}
             onChange={(e) => set({ members_only_events: e.currentTarget.checked })}
+          />
+          <Switch
+            label={t('discord.hubraNews', 'Neue Hubra-Versionen ankündigen')}
+            description={t(
+              'discord.hubraNewsHint',
+              'Im Hauptkanal, mit den wichtigsten Neuerungen.',
+            )}
+            checked={config.hubra_news}
+            onChange={(e) => set({ hubra_news: e.currentTarget.checked })}
+          />
+          <Switch
+            label={t('discord.maintenanceNotices', 'Wartungen ankündigen')}
+            description={t(
+              'discord.maintenanceNoticesHint',
+              'Im Hauptkanal: geplante Wartung, Beginn und Ende. Hubra ist dann kurz nicht erreichbar.',
+            )}
+            checked={config.maintenance_notices}
+            onChange={(e) => set({ maintenance_notices: e.currentTarget.checked })}
           />
           <Select
             label={t('discord.mention', 'Erwähnen')}
