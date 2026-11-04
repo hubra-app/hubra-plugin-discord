@@ -36,6 +36,18 @@ SIGNING_KEY = Ed25519PrivateKey.generate()
 APP_ID = "1111"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_platform_key():
+    """Each test makes its own platform key. Hubra's own fixture that
+    forgets the last one may not reach plugin tests (older Hubra)."""
+    from hubra.core import crypto
+
+    forget = getattr(crypto, "forget_keys", None)
+    if forget:
+        forget()
+    yield
+
+
 @pytest.fixture
 def discord_settings(app, db):
     from hubra.core.services import platform_settings
