@@ -1131,12 +1131,14 @@ def test_nightly_run_refreshes_the_profile(app, db, tenant):
         patch("hubra_discord.tasks.apply_profile.delay") as profile,
         patch("hubra_discord.tasks.audit_connection.delay") as audit,
         patch("hubra_discord.tasks.daily_extras.delay") as extras,
+        patch("hubra_discord.tasks.register_commands.delay") as register,
     ):
         sync_all_clubs.run()
     profile.assert_called_once_with(conn.id)
     events.assert_called_once_with(conn.id)
     audit.assert_called_once_with(conn.id)
     extras.assert_called_once_with(conn.id)
+    register.assert_called_once_with()
 
 
 # ── Direct messages (notifications) ──────────────────────────────────────────

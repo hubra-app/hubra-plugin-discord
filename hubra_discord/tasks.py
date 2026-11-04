@@ -215,6 +215,10 @@ def sync_all_clubs() -> int:
         sync_events.delay(connection_id)
         audit_connection.delay(connection_id)
         daily_extras.delay(connection_id)
+    if ids:
+        # New commands of a plugin update (such as "Melden") reach every
+        # server by the next night.
+        register_commands.delay()
     return len(ids)
 
 
