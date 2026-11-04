@@ -124,6 +124,7 @@ def test_manifest_declares_the_app_tasks_and_schedule(app):
         "commands",
         "events",
         "channels",
+        "moderate",
         "notify",
     ]
     assert registry.processes()["discord-gateway"] == "hubra_discord.gateway:run"
@@ -1129,11 +1130,13 @@ def test_nightly_run_refreshes_the_profile(app, db, tenant):
         patch("hubra_discord.tasks.sync_events.delay") as events,
         patch("hubra_discord.tasks.apply_profile.delay") as profile,
         patch("hubra_discord.tasks.audit_connection.delay") as audit,
+        patch("hubra_discord.tasks.daily_extras.delay") as extras,
     ):
         sync_all_clubs.run()
     profile.assert_called_once_with(conn.id)
     events.assert_called_once_with(conn.id)
     audit.assert_called_once_with(conn.id)
+    extras.assert_called_once_with(conn.id)
 
 
 # ── Direct messages (notifications) ──────────────────────────────────────────
@@ -2865,3 +2868,477 @@ def test_layout_with_own_names_and_several_new_categories(
     assert by_id[by_slot["events"]["id"]]["parent_id"] == cats[1]["id"]
     assert by_id[by_slot["bot"]["id"]]["parent_id"] == "903"
     assert bad.status_code == 409
+
+
+# ── Training cards ───────────────────────────────────────────────────────────
+
+
+def _training(db, trainer, when=None):
+    from hubra.core.models.event import ClubEvent
+
+    event = ClubEvent(
+        title="Abendtraining",
+        date=when or date.today() + timedelta(days=1),
+        time="18:00",
+        type="Training",
+        category="training",
+        group_id=trainer.id,
+    )
+    db.session.add(event)
+    db.session.commit()
+    return event
+
+
+def _group_channel(group_id, channel="555"):
+    return [
+        {
+            "source": f"group:{group_id}",
+            "group_id": group_id,
+            "channel_id": channel,
+            "role_id": "50",
+            "name": "Trainer",
+        }
+    ]
+
+
+def test_training_reminder_is_a_card_in_the_group_channel(db, tenant, trainer):
+    from hubra.core.models.event import EventAttendance
+
+    from hubra_discord import training
+
+    conn = _conn(
+        db,
+        tenant,
+        scopes=("announce", "channels", "commands"),
+        announce_reminders=True,
+        group_channels=_group_channel(trainer.id),
+    )
+    event = _training(db, trainer)
+    db.session.add(
+        EventAttendance(
+            event_id=event.id, member_id=trainer.members[0].id, status="excused"
+        )
+    )
+    db.session.commit()
+    with patch("hubra_discord.tasks.send_to_group_channel.delay") as group:
+        _remind(db, tenant, "on_event_reminder", event_id=event.id)
+    body, ref = group.call_args.args[2], group.call_args.args[3]
+    assert ref == training.key(event.id)
+    item = body["embeds"][0]
+    assert item["title"].startswith("🏃 Training")
+    assert any("1 entschuldigt" in f["value"] for f in item["fields"])
+    ids = [b["custom_id"] for b in body["components"][0]["components"]]
+    assert ids == [f"tatt:{event.id}:{s}" for s in ("present", "excused", "clear")]
+
+    # Switched off: the plain reminder, nothing to keep up to date.
+    conn.config = {**conn.config, "training_posts": False}
+    db.session.commit()
+    with patch("hubra_discord.tasks.send_to_group_channel.delay") as group:
+        _remind(db, tenant, "on_event_reminder", event_id=event.id)
+    assert group.call_args.args[3] is None
+    assert "Erinnerung" in group.call_args.args[2]["embeds"][0]["title"]
+
+
+def test_training_card_click_excuses_and_refreshes(client, db, tenant, trainer):
+    from hubra.core.models.event import EventAttendance
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import live, training
+
+    conn = _conn(db, tenant, scopes=("announce", "channels", "commands"))
+    event = _training(db, trainer)
+    with in_club(tenant):
+        live.remember(conn, training.key(event.id), "555", "8001")
+    db.session.commit()
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"tatt:{event.id}:excused"},
+    }
+    with patch("hubra_discord.tasks.refresh_training.delay") as refresh:
+        answer = _signed(client, click).get_json()
+    assert "Abgemeldet" in answer["data"]["content"]
+    refresh.assert_called_once_with(conn.id, event.id)
+    row = db.session.query(EventAttendance).filter_by(event_id=event.id).one()
+    assert row.status == "excused"
+    # The refresh edits the card with the new count.
+    edits = []
+    with (
+        in_club(tenant),
+        patch.object(
+            api, "bot", side_effect=lambda m, p, b=None, **k: edits.append((m, p, b))
+        ),
+    ):
+        assert training.refresh(conn, event.id) == 1
+    method, path, body = edits[0]
+    assert (method, path) == ("PATCH", "/channels/555/messages/8001")
+    assert any("1 entschuldigt" in f["value"] for f in body["embeds"][0]["fields"])
+
+
+def test_training_card_loses_its_buttons_when_over(db, tenant, trainer):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import live, training
+
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    event = _training(db, trainer, when=date.today() - timedelta(days=2))
+    edits = []
+    with in_club(tenant):
+        live.remember(conn, training.key(event.id), "555", "8001")
+        assert training.over(conn) == [event.id]
+        with patch.object(
+            api, "bot", side_effect=lambda m, p, b=None, **k: edits.append(b)
+        ):
+            training.refresh(conn, event.id)
+        assert training.key(event.id) not in live.posted(conn)
+    assert "components" not in edits[0]
+
+
+# ── Stats and Monday posts ───────────────────────────────────────────────────
+
+
+def test_stats_channel_is_made_renamed_and_removed(db, tenant, seeded_db):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import stats
+
+    conn = _conn(db, tenant, scopes=("channels",), stats_channel=True)
+    server = LayoutServer()
+    with in_club(tenant), patch.object(api, "bot", side_effect=server):
+        count = stats.member_count()
+        assert stats.ensure(conn).startswith("stats channel made")
+        made = server.channels[-1]
+        assert made["type"] == 2 and made["name"] == f"👥 Mitglieder: {count}"
+        everyone = next(o for o in made["permission_overwrites"] if o["id"] == GUILD)
+        assert int(everyone["deny"]) & api.CONNECT
+        cid = conn.config["stats_channel_id"]
+        assert cid == made["id"]
+        # Same name: nothing to do.
+        with patch.object(
+            api, "channel", return_value={"id": cid, "name": made["name"]}
+        ):
+            assert stats.ensure(conn) == ""
+            conn.config = {**conn.config, "stats_name": "Wir sind {n}"}
+            with patch.object(api, "edit_channel") as edit:
+                assert stats.ensure(conn) == f"stats channel: Wir sind {count}"
+            edit.assert_called_once()
+        conn.config = {**conn.config, "stats_channel": False}
+        assert stats.ensure(conn) == "stats channel deleted"
+        assert conn.config["stats_channel_id"] is None
+
+
+def test_stats_name_needs_the_number(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("channels",))
+    resp = client.patch(
+        f"/api/v1/apps/connections/{conn.id}",
+        json={"config": {"stats_name": "Mitglieder"}},
+        headers=H,
+    )
+    assert resp.status_code in (400, 409, 422)
+
+
+def test_weekly_numbers(db, tenant, seeded_db):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.stats import numbers, weekly_embed
+
+    with in_club(tenant):
+        n = numbers()
+        text = weekly_embed(n)["description"]
+    assert n["members"] >= 1 and "Mitglieder" in text and "verknüpft" in text
+
+
+def test_monday_posts_once_a_week(db, tenant, seeded_db):
+    from datetime import datetime as dt
+    from datetime import timezone as tz
+
+    from hubra.core.models.event import ClubEvent
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import digest
+    from hubra_discord.tasks import hourly
+
+    conn = _conn(
+        db, tenant, weekly_events=True, log_channel_id="909", weekly_stats=True
+    )
+    db.session.add_all(
+        [
+            ClubEvent(
+                title="Sommerfest",
+                date=date.today() + timedelta(days=2),
+                type="Social",
+                is_public=True,
+            ),
+            ClubEvent(
+                title="Vorstandssitzung",
+                date=date.today() + timedelta(days=3),
+                type="Meeting",
+            ),
+        ]
+    )
+    db.session.commit()
+    with in_club(tenant):
+        monday_early = dt(2026, 11, 2, 5, 0, tzinfo=tz.utc)  # 06:00 in Zurich
+        assert not digest.due(conn, monday_early)
+        assert digest.due(conn, dt(2026, 11, 2, 9, 0, tzinfo=tz.utc))
+        item = digest.events_embed(conn)
+    assert "Sommerfest" in item["description"]
+    assert "Vorstandssitzung" not in item["description"]  # members only
+
+    sent = []
+    with (
+        patch.object(api, "send", side_effect=lambda c, b: sent.append((c, b)) or {}),
+        patch.object(digest, "due", side_effect=[True, False]),
+    ):
+        assert hourly.run() == 2
+        assert hourly.run() == 0
+    assert [c for c, _ in sent] == [CHANNEL, "909"]
+    assert "Diese Woche" in sent[0][1]["embeds"][0]["title"]
+
+
+# ── People who left ──────────────────────────────────────────────────────────
+
+
+def test_former_members_are_removed_once(client, db, club_auth, tenant, trainer):
+    from datetime import datetime as dt
+    from datetime import timezone as tz
+
+    from hubra.core.models.member import Member
+    from hubra.core.models.user import User
+
+    conn = _conn(db, tenant, scopes=("announce", "moderate"), kick_leavers=True)
+    user = User(email="gone@test.ch", first_name="Gina", last_name="Gone")
+    user.set_password("password123")
+    db.session.add(user)
+    db.session.flush()
+    member = Member(user_id=user.id, status="active")
+    db.session.add_all(
+        [member, ExternalAccount(user_id=user.id, provider="discord", external_id="43")]
+    )
+    db.session.commit()
+    base = f"/api/v1/discord/connections/{conn.id}/leavers"
+    with patch.object(api, "member", return_value={"user": {"id": "43"}}):
+        assert client.get(base, headers=H).get_json()["people"] == []
+        member.archived_at = dt.now(tz.utc)
+        db.session.commit()
+        people = client.get(base, headers=H).get_json()["people"]
+    assert [p["discordId"] for p in people] == ["43"]
+    with patch.object(api, "kick", return_value=True) as kick:
+        resp = client.post(base, headers=H)
+        assert resp.get_json() == {"removed": 1, "failed": 0}
+        # Not again: someone who comes back as a guest stays.
+        assert client.post(base, headers=H).get_json()["removed"] == 0
+    kick.assert_called_once()
+    assert kick.call_args.args[:2] == (GUILD, "43")
+
+
+def test_removing_leavers_needs_the_moderate_scope(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("announce",))
+    resp = client.get(f"/api/v1/discord/connections/{conn.id}/leavers", headers=H)
+    assert resp.status_code == 409 and "Moderation" in resp.get_json()["message"]
+    resp = client.patch(
+        f"/api/v1/apps/connections/{conn.id}",
+        json={"config": {"kick_leavers": True}},
+        headers=H,
+    )
+    assert resp.status_code != 200
+
+
+# ── Moderation ───────────────────────────────────────────────────────────────
+
+
+def test_report_a_message(client, db, tenant):
+    from hubra_discord.commands import all_commands
+
+    assert any(c["name"] == "Melden" and c["type"] == 3 for c in all_commands())
+    _conn(db, tenant, scopes=("commands", "moderate"), mod_channel_id="919")
+    ask = {
+        "type": 2,
+        "guild_id": GUILD,
+        "channel_id": "555",
+        "member": {"user": {"id": "77"}},
+        "data": {"name": "Melden", "type": 3, "target_id": "6001"},
+    }
+    form = _signed(client, ask).get_json()
+    assert form["type"] == 9 and form["data"]["custom_id"] == "mrep:555:6001"
+    sent = []
+    filled = {
+        "type": 5,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "77", "username": "anna"}},
+        "data": {
+            "custom_id": "mrep:555:6001",
+            "components": [
+                {"type": 1, "components": [{"custom_id": "reason", "value": "Spam"}]}
+            ],
+        },
+    }
+    with (
+        patch.object(
+            api,
+            "message",
+            return_value={"author": {"id": "66"}, "content": "Kauf jetzt!"},
+        ),
+        patch.object(api, "send", side_effect=lambda c, b: sent.append((c, b)) or {}),
+    ):
+        answer = _signed(client, filled).get_json()
+    assert "Danke" in answer["data"]["content"] and answer["data"]["flags"] == 64
+    channel, card = sent[0]
+    assert channel == "919"
+    assert card["embeds"][0]["description"] == "Kauf jetzt!"
+    ids = [b.get("custom_id") for b in card["components"][0]["components"]]
+    assert "mdel:555:6001" in ids and "mdone" in ids
+
+    # Only someone who may manage messages deletes it.
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "77", "username": "anna"}, "permissions": "0"},
+        "data": {"custom_id": "mdel:555:6001"},
+        "message": card,
+    }
+    assert (
+        "Nachrichten verwalten" in _signed(client, click).get_json()["data"]["content"]
+    )
+    click["member"]["permissions"] = str(api.MANAGE_MESSAGES)
+    with patch.object(api, "delete_message", return_value=True) as delete:
+        done = _signed(client, click).get_json()
+    delete.assert_called_once()
+    assert done["type"] == 7 and done["data"]["components"] == []
+    assert "Gelöscht von anna" in done["data"]["embeds"][0]["fields"][-1]["value"]
+
+
+def test_reports_need_the_moderate_scope(client, db, tenant):
+    _conn(db, tenant, scopes=("commands",), mod_channel_id="919")
+    ask = {
+        "type": 2,
+        "guild_id": GUILD,
+        "channel_id": "555",
+        "member": {"user": {"id": "77"}},
+        "data": {"name": "Melden", "type": 3, "target_id": "6001"},
+    }
+    assert "ausgeschaltet" in _signed(client, ask).get_json()["data"]["content"]
+
+
+def test_newcomer_card_and_guest_role(client, db, tenant, seeded_db):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.notify import member_joined
+
+    conn = _conn(
+        db,
+        tenant,
+        scopes=("commands", "moderate"),
+        guest_queue=True,
+        log_channel_id="909",
+    )
+    sent = []
+    with (
+        in_club(tenant),
+        patch.object(api, "send", side_effect=lambda c, b: sent.append((c, b)) or {}),
+    ):
+        assert "newcomer" in member_joined(conn, "555000")
+    channel, card = sent[0]
+    assert channel == "909"
+    ids = [b["custom_id"] for b in card["components"][0]["components"]]
+    assert ids == ["gok:555000", "gkick:555000"]
+
+    server = LayoutServer()
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {
+            "user": {"id": "1", "username": "admin"},
+            "permissions": str(api.MANAGE_ROLES),
+        },
+        "data": {"custom_id": "gok:555000"},
+        "message": card,
+    }
+    with (
+        patch.object(api, "bot", side_effect=server),
+        patch.object(api, "add_role") as add,
+    ):
+        done = _signed(client, click).get_json()
+    assert done["type"] == 7, done
+    db.session.refresh(conn)
+    role = conn.config["guest_role"]
+    assert role["name"] == "Gast"
+    assert add.call_args.args[:3] == (GUILD, "555000", role["role_id"])
+    # Removing needs Kick Members.
+    click["data"]["custom_id"] = "gkick:555000"
+    assert "kicken" in _signed(client, click).get_json()["data"]["content"]
+
+
+# ── Feedback after events ────────────────────────────────────────────────────
+
+
+def test_feedback_after_an_event(client, db, club_auth, tenant, trainer):
+    from datetime import datetime as dt
+    from datetime import timezone as tz
+
+    from hubra.core.models.event import ClubEvent, EventRegistration
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import feedback
+    from hubra_discord.tasks import hourly
+
+    conn = _conn(db, tenant, event_feedback=True)
+    yesterday = date.today() - timedelta(days=1)
+    event = ClubEvent(
+        title="Sommerfest", date=yesterday, time="18:00", type="Social", is_public=True
+    )
+    db.session.add(event)
+    db.session.commit()
+    member = trainer.members[0]
+    db.session.add(
+        EventRegistration(event_id=event.id, member_id=member.id, status="registered")
+    )
+    db.session.commit()
+    with in_club(tenant):
+        now = dt.combine(yesterday, dt.min.time(), tzinfo=tz.utc) + timedelta(hours=26)
+        assert feedback.due(conn, now) == [event]
+    sent = []
+    with (
+        patch.object(api, "send", side_effect=lambda c, b: sent.append((c, b)) or {}),
+        patch.object(
+            feedback,
+            "due",
+            side_effect=lambda c, n=None: [db.session.get(ClubEvent, event.id)],
+        ),
+    ):
+        assert hourly.run() == 1
+    channel, question = sent[0]
+    assert channel == CHANNEL and "Sommerfest" in question["embeds"][0]["title"]
+
+    def click(custom_id, user="42", kind=3, **extra):
+        body = {
+            "type": kind,
+            "guild_id": GUILD,
+            "member": {"user": {"id": user}},
+            "data": {"custom_id": custom_id, **extra},
+        }
+        return _signed(client, body).get_json()
+
+    assert "4 von 5" in click(f"fb:{event.id}:4")["data"]["content"]
+    assert "5 von 5" in click(f"fb:{event.id}:5")["data"]["content"]  # replaces
+    assert "Verknüpfe" in click(f"fb:{event.id}:1", user="999")["data"]["content"]
+    assert click(f"fbc:{event.id}")["type"] == 9
+    sent_form = click(
+        f"fbt:{event.id}",
+        kind=5,
+        components=[
+            {
+                "type": 1,
+                "components": [{"custom_id": "text", "value": "Super Stimmung"}],
+            }
+        ],
+    )
+    assert "Danke" in sent_form["data"]["content"]
+    shown = client.get(
+        f"/api/v1/discord/connections/{conn.id}/feedback", headers=H
+    ).get_json()
+    first = shown["events"][0]
+    assert (first["count"], first["average"]) == (1, 5.0)
+    assert first["comments"] == ["Super Stimmung"]
+    assert "42" not in json.dumps(shown)  # anonymous

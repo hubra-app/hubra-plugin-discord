@@ -214,7 +214,116 @@ def sync_all_clubs() -> int:
         apply_profile.delay(connection_id)
         sync_events.delay(connection_id)
         audit_connection.delay(connection_id)
+        daily_extras.delay(connection_id)
     return len(ids)
+
+
+@celery_app.task(name="hubra_discord.tasks.daily_extras", bind=True, max_retries=3)
+def daily_extras(self, connection_id: int) -> dict | None:
+    """Nightly: the stats channel's count, and people who left the club
+    leave the server (stats.py, leavers.py)."""
+    from . import leavers, stats
+
+    every = ("channels", "moderate")
+    with _connection(connection_id, every) as conn:
+        if conn is None:
+            return None
+        done: dict = {}
+        try:
+            done["stats"] = stats.ensure(conn)
+        except DiscordError as exc:
+            _failed(conn, "stats", exc, doing="Updating the stats channel")
+        else:
+            if done["stats"]:
+                botlog.log(conn, "stats", True, done["stats"])
+        if (conn.config or {}).get("kick_leavers"):
+            done.update(leavers.run(conn))
+        db.session.commit()
+        return done
+
+
+@celery_app.task(name="hubra_discord.tasks.hourly")
+def hourly() -> int:
+    """Every hour: Monday's posts (digest.py) and feedback questions after
+    events (feedback.py)."""
+    from sqlalchemy import select
+
+    from hubra.core.models.connected_app import ConnectedApp
+
+    from . import digest, feedback
+
+    sent = 0
+    ids = db.session.scalars(
+        select(ConnectedApp.id).where(
+            ConnectedApp.provider == "discord", ConnectedApp.status == "active"
+        )
+    ).all()
+    for connection_id in ids:
+        every = ("announce", "channels", "commands", "moderate")
+        with _connection(connection_id, every) as conn:
+            if conn is None:
+                continue
+            try:
+                sent += _weekly(conn, digest) + _ask_feedback(conn, feedback)
+            except DiscordError as exc:
+                _failed(conn, "weekly", exc, doing="Monday posts or feedback")
+            db.session.commit()
+    return sent
+
+
+def _weekly(conn, digest) -> int:
+    from .app import channel_for
+    from .mod import channel as mod_channel
+    from .profile import brand
+    from .stats import numbers, weekly_embed
+    from hubra.core.tenant.context import current_tenant
+
+    if not digest.due(conn):
+        return 0
+    config = conn.config or {}
+    digest.mark_sent(conn)  # once, even when a post fails
+    db.session.commit()
+    sent = 0
+    if config.get("weekly_events") and apps.has_scope(conn, "announce"):
+        item = digest.events_embed(conn)
+        channel = channel_for(config, "events")
+        if item and channel:
+            body = brand(
+                {"embeds": [item], "allowed_mentions": {"parse": []}},
+                current_tenant(),
+                config,
+            )
+            api.send(channel, body)
+            botlog.log(conn, "weekly", True, "Wochenvorschau gepostet")
+            sent += 1
+    if config.get("weekly_stats") and mod_channel(conn):
+        api.send(
+            mod_channel(conn),
+            {"embeds": [weekly_embed(numbers())], "allowed_mentions": {"parse": []}},
+        )
+        sent += 1
+    return sent
+
+
+def _ask_feedback(conn, feedback) -> int:
+    from .profile import brand
+    from hubra.core.tenant.context import current_tenant
+
+    sent = 0
+    for event in feedback.due(conn):
+        feedback.mark_asked(conn, event)  # asked once, even if it fails
+        db.session.commit()
+        channel = feedback.where(conn, event)
+        if not channel:
+            botlog.skipped(conn, f'Feedback "{event.title}"', "no channel for events")
+            continue
+        api.send(
+            channel,
+            brand(feedback.question(event), current_tenant(), conn.config or {}),
+        )
+        botlog.log(conn, "feedback", True, f'Rückmeldung erbeten: "{event.title}"')
+        sent += 1
+    return sent
 
 
 @celery_app.task(name="hubra_discord.tasks.audit_connection")
@@ -475,6 +584,16 @@ def finish_poll(self, connection_id: int, poll_id: int):
     )
 
 
+@celery_app.task(name="hubra_discord.tasks.refresh_training", bind=True, max_retries=3)
+def refresh_training(self, connection_id: int, event_id: int):
+    """A training card's count, or its final state once it is over."""
+    from . import training
+
+    return _live_task(
+        self, connection_id, "Updating a training card", training.refresh, event_id
+    )
+
+
 @celery_app.task(name="hubra_discord.tasks.tidy_messages")
 def tidy_messages() -> int:
     """Every few minutes: polls whose closing time passed get their result,
@@ -483,7 +602,7 @@ def tidy_messages() -> int:
 
     from hubra.core.models.connected_app import ConnectedApp
 
-    from . import live
+    from . import live, training
 
     queued = 0
     conns = db.session.scalars(
@@ -502,6 +621,9 @@ def tidy_messages() -> int:
                 queued += 1
             for event_id in live.over_events(live_conn):
                 refresh_event.delay(conn.id, event_id)
+                queued += 1
+            for event_id in training.over(live_conn):
+                refresh_training.delay(conn.id, event_id)
                 queued += 1
             db.session.commit()  # polls deleted in the app are forgotten
     return queued

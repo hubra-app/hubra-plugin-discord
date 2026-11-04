@@ -131,7 +131,7 @@ def _to_groups(
     group_ids,
     build,
     what: str = "",
-    ref: str | None = None,
+    ref=None,
     extra=None,
     function_ids=(),
 ) -> None:
@@ -166,7 +166,7 @@ def _to_groups(
                 conn.id,
                 int(raw) if kind == "group" else None,
                 body,
-                ref,
+                ref(conn) if callable(ref) else ref,
                 source,
             )
 
@@ -225,12 +225,16 @@ def on_event_published(tenant_id=None, event_id=None, **_):
 
 def _refresh_later(tenant_id, event_id, deleted: bool = False) -> None:
     """Edit the event's messages once the change is committed."""
-    from .tasks import refresh_event
+    from . import training
+    from .tasks import refresh_event, refresh_training
 
     key = live.event_key(event_id)
+    card = training.key(int(event_id))
     for conn in _live_connections(tenant_id):
         if key in live.posted(conn):
             after_commit(refresh_event.delay, conn.id, int(event_id), bool(deleted))
+        if card in live.posted(conn):  # new time or place; gone when deleted
+            after_commit(refresh_training.delay, conn.id, int(event_id))
 
 
 def _live_connections(tenant_id):
@@ -340,11 +344,19 @@ def on_event_reminder(tenant_id=None, event_id=None, **_):
         return event_buttons(event) if apps.has_scope(conn, "commands") else None
 
     if _has_group_channel(tenant_id, event.group_id):
+        from . import training
+
+        def group_build(conn):
+            if training.wanted(conn, event):  # the training card instead
+                return training.card(event)
+            return event_reminder_embed(event), buttons_for(conn)
+
         _to_groups(
             tenant_id,
             [event.group_id],
-            lambda c: (event_reminder_embed(event), buttons_for(c)),
+            group_build,
             f'Reminder for "{event.title}"',
+            ref=lambda c: training.key(event.id) if training.wanted(c, event) else None,
         )
         return
 

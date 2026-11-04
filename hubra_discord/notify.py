@@ -96,8 +96,15 @@ def member_joined(conn, user_id: str) -> str:
         if managed_map(conn):
             return sync_member(conn, member) or "joined (roles already right)"
         return "joined (member)"
+    from .mod import newcomer
+
+    try:
+        queued = newcomer(conn, user_id)
+    except DiscordError as exc:  # the welcome still goes out
+        botlog.log(conn, "guests", False, f"Karte für neue Person: {exc}")
+        queued = ""
     if not apps.has_scope(conn, "notify") or not (conn.config or {}).get("welcome_dm"):
-        return ""
+        return queued
     body = {
         "content": welcome_text(conn),
         "allowed_mentions": {"parse": []},
@@ -106,6 +113,8 @@ def member_joined(conn, user_id: str) -> str:
         api.dm(user_id, body)
     except DiscordError as exc:
         if exc.status == 403:  # they don't take direct messages
-            return "joined; welcome not sent (direct messages closed)"
+            return ", ".join(
+                x for x in (queued, "welcome not sent (direct messages closed)") if x
+            )
         raise
-    return "welcome sent"
+    return ", ".join(x for x in (queued, "welcome sent") if x)

@@ -43,6 +43,12 @@ TITLES = {
     "channels": "#️⃣ Channels",
     "audit": "🔒 Permission check",
     "layout": "🧱 Channel layout",
+    "stats": "📊 Stats channel",
+    "weekly": "🗓️ Monday posts",
+    "leavers": "🚪 Left the club",
+    "report": "🚩 Report",
+    "guests": "👋 New people",
+    "feedback": "💬 Feedback",
 }
 
 
