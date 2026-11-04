@@ -152,10 +152,6 @@
         "open": "Set up",
         "done": "Made: {{names}}",
         "nothing": "Everything is there already",
-        "hint": "The bot makes the channels you pick and sets Hubra up to use them. \"Members only\" needs the member role; it is turned on for this. Public channels made here count as approved.",
-        "there": "already there",
-        "newCategory": "New category",
-        "categoryName": "Category name",
         "make": "Make channels",
         "rules": "Rules: everyone reads, nobody writes",
         "announcements": "Announcements: members read, becomes the main channel",
@@ -163,7 +159,12 @@
         "events": "Events internal: members read and sign up",
         "publicEvents": "Events public: everyone sees public events",
         "bot": "Bot: members type commands (/hilfe)",
-        "log": "Bot log: admins only"
+        "log": "Bot log: admins only",
+        "newCat": "{{name}} (new)",
+        "hint2": "The bot makes the channels you pick and sets Hubra up to use them. Pick a name and category per channel; add new categories above. \"Members only\" needs the member role; it is turned on for this. Public channels made here count as approved.",
+        "newCategories": "New categories",
+        "newCategoriesHint": "Only made when a channel uses them.",
+        "thereAs": "already there: #{{name}}"
       },
       "au": {
         "approved": "#{{name}} stays public",
@@ -360,10 +361,6 @@
         "open": "Einrichten",
         "done": "Angelegt: {{names}}",
         "nothing": "Alles schon da",
-        "hint": "Der Bot legt die gewählten Kanäle an und richtet Hubra darauf ein. «Nur Mitglieder» braucht die Mitglied-Rolle; sie wird dafür eingeschaltet. Öffentliche Kanäle gelten damit als freigegeben.",
-        "there": "schon da",
-        "newCategory": "Neue Kategorie",
-        "categoryName": "Name der Kategorie",
         "make": "Kanäle anlegen",
         "rules": "Regeln: alle lesen, niemand schreibt",
         "announcements": "Ankündigungen: Mitglieder lesen, wird Hauptkanal",
@@ -371,7 +368,12 @@
         "events": "Anlässe intern: Mitglieder lesen und melden sich an",
         "publicEvents": "Anlässe öffentlich: alle sehen öffentliche Anlässe",
         "bot": "Bot: Mitglieder schreiben Befehle (/hilfe)",
-        "log": "Bot-Protokoll: nur Admins"
+        "log": "Bot-Protokoll: nur Admins",
+        "newCat": "{{name}} (neu)",
+        "hint2": "Der Bot legt die gewählten Kanäle an und richtet Hubra darauf ein. Name und Kategorie wählst du pro Kanal; neue Kategorien legst du oben an. «Nur Mitglieder» braucht die Mitglied-Rolle; sie wird dafür eingeschaltet. Öffentliche Kanäle gelten damit als freigegeben.",
+        "newCategories": "Neue Kategorien",
+        "newCategoriesHint": "Werden nur angelegt, wenn ein Kanal sie nutzt.",
+        "thereAs": "schon da: #{{name}}"
       },
       "au": {
         "approved": "#{{name}} bleibt öffentlich",

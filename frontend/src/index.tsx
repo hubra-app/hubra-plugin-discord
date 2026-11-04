@@ -13,6 +13,7 @@ import {
   Stack,
   Switch,
   Tabs,
+  TagsInput,
   Text,
   TextInput,
   Textarea,
@@ -1291,6 +1292,22 @@ const ACCESS_COLOR: Record<string, string> = {
   private: 'gray',
 }
 
+const DEFAULT_CATEGORY: Record<string, string> = {
+  rules: 'new:Info',
+  announcements: 'new:Info',
+  roles: 'new:Info',
+  events: 'new:Anlässe',
+  public_events: 'new:Anlässe',
+  bot: 'new:Info',
+  log: '',
+}
+
+interface SlotDraft {
+  on: boolean
+  name: string
+  category: string
+}
+
 function LayoutCard({ connection }: { connection: Connection }) {
   const { t } = useT()
   const { notify } = useToast()
@@ -1302,9 +1319,8 @@ function LayoutCard({ connection }: { connection: Connection }) {
     queryFn: () => apiFetch<LayoutState>(`/discord/connections/${connection.id}/layout`),
     enabled: open,
   })
-  const [picked, setPicked] = useState<string[]>(['rules', 'announcements', 'roles', 'events', 'bot'])
-  const [category, setCategory] = useState<string>('new')
-  const [categoryName, setCategoryName] = useState('Verein')
+  const [drafts, setDrafts] = useState<Record<string, SlotDraft>>({})
+  const [newCats, setNewCats] = useState<string[]>(['Info', 'Anlässe'])
   const [busy, setBusy] = useState(false)
   const access = (a: string) =>
     a === 'public_read'
@@ -1335,19 +1351,37 @@ function LayoutCard({ connection }: { connection: Connection }) {
       </Paper>
     )
   const data = query.data
+  const draft = (slot: LayoutState['slots'][number]): SlotDraft =>
+    drafts[slot.key] ?? {
+      on: ['rules', 'announcements', 'roles', 'events', 'bot'].includes(slot.key),
+      name: slot.name,
+      category: DEFAULT_CATEGORY[slot.key] ?? '',
+    }
+  const setDraft = (slot: LayoutState['slots'][number], patch: Partial<SlotDraft>) =>
+    setDrafts((d) => ({ ...d, [slot.key]: { ...draft(slot), ...patch } }))
+  const catData = [
+    { value: '', label: t('discord.ch.noCategory', 'Ohne Kategorie') },
+    ...newCats.map((n) => ({ value: `new:${n}`, label: t('discord.lay.newCat', '{{name}} (neu)', { name: n }) })),
+    ...(data?.categories ?? []).map((c) => ({ value: c.id, label: c.name })),
+  ]
+  const todo = (data?.slots ?? []).filter((s) => !s.channelId && draft(s).on)
   const run = async () => {
     setBusy(true)
     try {
-      const body =
-        category === 'new' ? { slots: picked, categoryName } : { slots: picked, categoryId: category || null }
-      const result = await apiFetch<{ made: { name: string }[] }>(`/discord/connections/${connection.id}/layout`, {
-        method: 'POST',
-        body: JSON.stringify(body),
+      const slots = todo.map((s) => {
+        const d = draft(s)
+        const category = d.category.startsWith('new:') && !newCats.includes(d.category.slice(4)) ? '' : d.category
+        return { key: s.key, name: d.name, category }
       })
+      const result = await apiFetch<{ made: { name: string; slot: string }[] }>(
+        `/discord/connections/${connection.id}/layout`,
+        { method: 'POST', body: JSON.stringify({ slots }) },
+      )
+      const channels = result.made.filter((m) => m.slot !== 'category')
       notify(
         'success',
-        result.made.length
-          ? t('discord.lay.done', 'Angelegt: {{names}}', { names: result.made.map((m) => '#' + m.name).join(', ') })
+        channels.length
+          ? t('discord.lay.done', 'Angelegt: {{names}}', { names: channels.map((m) => '#' + m.name).join(', ') })
           : t('discord.lay.nothing', 'Alles schon da'),
       )
       for (const k of [key, ['discord-server-channels', connection.id], ['discord-options', connection.id], ['discord-audit', connection.id]])
@@ -1366,71 +1400,85 @@ function LayoutCard({ connection }: { connection: Connection }) {
         </Text>
         <Text size="xs" c="dimmed">
           {t(
-            'discord.lay.hint',
-            'Der Bot legt die gewählten Kanäle an und richtet Hubra darauf ein. «Nur Mitglieder» braucht die Mitglied-Rolle; sie wird dafür eingeschaltet. Öffentliche Kanäle gelten damit als freigegeben.',
+            'discord.lay.hint2',
+            'Der Bot legt die gewählten Kanäle an und richtet Hubra darauf ein. Name und Kategorie wählst du pro Kanal; neue Kategorien legst du oben an. «Nur Mitglieder» braucht die Mitglied-Rolle; sie wird dafür eingeschaltet. Öffentliche Kanäle gelten damit als freigegeben.',
           )}
         </Text>
         {!data && <Text c="dimmed" size="sm">{t('discord.loading', 'Lädt …')}</Text>}
-        {data &&
-          data.slots.map((slot) => (
-            <Group key={slot.key} gap="xs" wrap="nowrap">
-              <Checkbox
-                size="xs"
-                disabled={!!slot.channelId}
-                checked={!!slot.channelId || picked.includes(slot.key)}
-                onChange={(e) =>
-                  setPicked(
-                    e.currentTarget.checked ? [...picked, slot.key] : picked.filter((p) => p !== slot.key),
-                  )
-                }
-                label={
-                  <Text size="sm">
-                    <b>#{slot.channelName ?? slot.name}</b> · {t(SLOT_TEXT[slot.key]?.key ?? slot.key, SLOT_TEXT[slot.key]?.label ?? slot.key)}
-                  </Text>
-                }
-              />
-              <Badge size="xs" variant="light" color={ACCESS_COLOR[slot.access] ?? 'gray'}>
-                {access(slot.access)}
-              </Badge>
-              {slot.channelId && (
-                <Badge size="xs" variant="outline" color="green">
-                  {t('discord.lay.there', 'schon da')}
-                </Badge>
-              )}
-            </Group>
-          ))}
         {data && (
-          <Group gap="xs" align="flex-end" wrap="wrap">
-            <Select
-              size="xs"
-              style={{ flex: '1 1 200px' }}
-              label={t('discord.ch.parent', 'Kategorie')}
-              data={[
-                { value: 'new', label: t('discord.lay.newCategory', 'Neue Kategorie') },
-                { value: '', label: t('discord.ch.noCategory', 'Ohne Kategorie') },
-                ...data.categories.map((c) => ({ value: c.id, label: c.name })),
-              ]}
-              value={category}
-              allowDeselect={false}
-              onChange={(v) => setCategory(v ?? 'new')}
-            />
-            {category === 'new' && (
-              <TextInput
-                size="xs"
-                style={{ flex: '1 1 160px' }}
-                label={t('discord.lay.categoryName', 'Name der Kategorie')}
-                value={categoryName}
-                maxLength={100}
-                onChange={(e) => setCategoryName(e.currentTarget.value)}
-              />
-            )}
+          <TagsInput
+            size="xs"
+            label={t('discord.lay.newCategories', 'Neue Kategorien')}
+            description={t('discord.lay.newCategoriesHint', 'Werden nur angelegt, wenn ein Kanal sie nutzt.')}
+            value={newCats}
+            onChange={(v) => setNewCats(v.map((x) => x.trim().slice(0, 100)).filter(Boolean))}
+            maxTags={10}
+          />
+        )}
+        {data &&
+          data.slots.map((slot) => {
+            const d = draft(slot)
+            return (
+              <Group key={slot.key} gap="xs" wrap="wrap" align="center">
+                <Checkbox
+                  size="xs"
+                  style={{ flex: '0 0 auto' }}
+                  disabled={!!slot.channelId}
+                  checked={!!slot.channelId || d.on}
+                  onChange={(e) => setDraft(slot, { on: e.currentTarget.checked })}
+                  aria-label={slot.name}
+                />
+                <div style={{ flex: '3 1 220px', minWidth: 0 }}>
+                  <Text size="sm">
+                    {t(SLOT_TEXT[slot.key]?.key ?? slot.key, SLOT_TEXT[slot.key]?.label ?? slot.key)}
+                  </Text>
+                  <Group gap={4}>
+                    <Badge size="xs" variant="light" color={ACCESS_COLOR[slot.access] ?? 'gray'}>
+                      {access(slot.access)}
+                    </Badge>
+                    {slot.channelId && (
+                      <Badge size="xs" variant="outline" color="green">
+                        {t('discord.lay.thereAs', 'schon da: #{{name}}', { name: slot.channelName ?? '' })}
+                      </Badge>
+                    )}
+                  </Group>
+                </div>
+                {!slot.channelId && (
+                  <>
+                    <TextInput
+                      size="xs"
+                      style={{ flex: '2 1 150px' }}
+                      aria-label={t('discord.channelName', 'Kanalname')}
+                      leftSection="#"
+                      value={d.name}
+                      maxLength={100}
+                      disabled={!d.on}
+                      onChange={(e) => setDraft(slot, { name: e.currentTarget.value })}
+                    />
+                    <Select
+                      size="xs"
+                      style={{ flex: '2 1 150px' }}
+                      aria-label={t('discord.ch.parent', 'Kategorie')}
+                      data={catData}
+                      value={catData.some((c) => c.value === d.category) ? d.category : ''}
+                      allowDeselect={false}
+                      disabled={!d.on}
+                      onChange={(v) => setDraft(slot, { category: v ?? '' })}
+                    />
+                  </>
+                )}
+              </Group>
+            )
+          })}
+        {data && (
+          <Group justify="flex-end" gap="xs">
             <Button size="xs" variant="subtle" onClick={() => setOpen(false)}>
               {t('common.cancel', 'Abbrechen')}
             </Button>
             <Button
               size="xs"
               loading={busy}
-              disabled={!data.hasScope || !picked.some((p) => !data.slots.find((s) => s.key === p)?.channelId)}
+              disabled={!data.hasScope || todo.length === 0 || todo.some((s) => !draft(s).name.trim())}
               onClick={run}
             >
               {t('discord.lay.make', 'Kanäle anlegen')}

@@ -315,7 +315,7 @@ def server_apply_layout(connection_id: int):
     def run(member, conn):
         result = apply(
             conn,
-            [str(s) for s in slots],
+            [s if isinstance(s, dict) else str(s) for s in slots],
             category_id=str(body.get("categoryId") or "") or None,
             category_name=str(body.get("categoryName") or ""),
             who=member.name,

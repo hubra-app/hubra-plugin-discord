@@ -178,9 +178,26 @@ def _roles_panel() -> dict:
     }
 
 
+def _wanted(slots) -> dict[str, dict]:
+    """slot → {name, category}. A slot is a key, or {key, name, category}
+    where category is "" (none), an existing category id or "new:<name>"."""
+    out: dict[str, dict] = {}
+    for item in slots or []:
+        if isinstance(item, dict):
+            key = str(item.get("key") or "")
+            name = " ".join(str(item.get("name") or "").split())[:100]
+            category = item.get("category")
+            category = None if category is None else str(category)
+        else:
+            key, name, category = str(item), "", None
+        if key in SLOTS:
+            out[key] = {"name": name, "category": category}
+    return out
+
+
 def apply(
     conn,
-    slots: list[str],
+    slots: list,
     *,
     category_id: str | None = None,
     category_name: str = "",
@@ -195,7 +212,8 @@ def apply(
             "Kanäle verwalten ist für diese Verbindung nicht freigegeben "
             "(Bereich «Kanäle» unter Darf)."
         )
-    picked = [s for s in ORDER if s in set(slots or [])]
+    wanted = _wanted(slots)
+    picked = [s for s in ORDER if s in wanted]
     if not picked:
         raise LayoutError("Wähle mindestens einen Kanal.")
     state = current(conn)
@@ -203,27 +221,59 @@ def apply(
     todo = [s for s in picked if s not in have]
     if not todo:
         return {"made": [], "kept": picked}
+    known_ids = {c["id"] for c in state["categories"]}
+    for slot in todo:
+        choice = wanted[slot]["category"]
+        if choice and not choice.startswith("new:") and choice not in known_ids:
+            raise LayoutError("Diese Kategorie gibt es auf eurem Server nicht.")
+    if category_id and str(category_id) not in known_ids:
+        raise LayoutError("Diese Kategorie gibt es auf eurem Server nicht.")
     guild = str(conn.external_id)
     reason = f"Hubra: Kanäle eingerichtet von {who or 'einem Admin'}"
     made: list[dict] = []
     try:
         needs_members = any(SLOTS[s]["access"].startswith("members") for s in todo)
         role = member_role.ensure_now(conn) if needs_members else None
-        parent = None
-        if category_id:
-            if category_id not in {c["id"] for c in state["categories"]}:
+        known = {c["id"] for c in state["categories"]}
+        new_cats: dict[str, str] = {}  # name → id, made once each
+
+        def parent_for(choice: str | None) -> str | None:
+            if choice is None:  # the shared choice for all slots
+                if category_id:
+                    choice = str(category_id)
+                elif category_name.strip():
+                    choice = "new:" + category_name.strip()
+                else:
+                    return None
+            if not choice:
+                return None
+            if choice.startswith("new:"):
+                name = choice[4:].strip()[:100]
+                if not name:
+                    return None
+                if name not in new_cats:
+                    cat = api.create_channel(guild, {"name": name, "type": 4}, reason)
+                    new_cats[name] = str(cat["id"])
+                    made.append(
+                        {
+                            "slot": "category",
+                            "id": new_cats[name],
+                            "name": cat.get("name"),
+                        }
+                    )
+                return new_cats[name]
+            if choice not in known:
                 raise LayoutError("Diese Kategorie gibt es auf eurem Server nicht.")
-            parent = str(category_id)
-        elif category_name.strip():
-            cat = api.create_channel(
-                guild, {"name": category_name.strip()[:100], "type": 4}, reason
-            )
-            parent = str(cat["id"])
-            made.append({"slot": "category", "id": parent, "name": cat.get("name")})
+            return choice
+
         for slot in todo:
             spec = SLOTS[slot]
+            parent = parent_for(wanted[slot]["category"])
+            name = wanted[slot]["name"] or spec["name"]
+            if spec.get("type", 0) in (0, 5):
+                name = name.lower().replace(" ", "-")
             body = {
-                "name": spec["name"],
+                "name": name,
                 "type": spec.get("type", 0),
                 "topic": spec["topic"],
                 "permission_overwrites": _overwrites(conn, spec["access"], role),

@@ -2828,3 +2828,40 @@ def test_roles_channel_button_shows_the_groups(client, db, tenant, trainer, seed
     answer = _signed(client, click).get_json()
     assert answer["type"] == 4 and "Chor" in answer["data"]["content"]
     assert answer["data"]["flags"] == 64
+
+
+def test_layout_with_own_names_and_several_new_categories(
+    client, db, club_auth, tenant, discord_settings
+):
+    conn = _conn(db, tenant, scopes=("announce", "channels"), channel_id=None)
+    server = LayoutServer()
+    base = f"/api/v1/discord/connections/{conn.id}/layout"
+    with patch.object(api, "bot", side_effect=server):
+        resp = client.post(
+            base,
+            json={
+                "slots": [
+                    {"key": "rules", "name": "Hausordnung", "category": "new:Info"},
+                    {"key": "announcements", "name": "news", "category": "new:Info"},
+                    {"key": "events", "name": "Termine", "category": "new:Anlässe"},
+                    {"key": "bot", "category": "903"},
+                ]
+            },
+            headers=H,
+        )
+        assert resp.status_code == 201, resp.get_json()
+        made = resp.get_json()["made"]
+        bad = client.post(
+            base, json={"slots": [{"key": "log", "category": "12345"}]}, headers=H
+        )
+    cats = [m for m in made if m["slot"] == "category"]
+    assert [c["name"] for c in cats] == ["Info", "Anlässe"]
+    by_slot = {m["slot"]: m for m in made}
+    assert by_slot["rules"]["name"] == "hausordnung"
+    assert by_slot["events"]["name"] == "termine"
+    by_id = {c["id"]: c for c in server.channels}
+    assert by_id[by_slot["rules"]["id"]]["parent_id"] == cats[0]["id"]
+    assert by_id[by_slot["announcements"]["id"]]["parent_id"] == cats[0]["id"]
+    assert by_id[by_slot["events"]["id"]]["parent_id"] == cats[1]["id"]
+    assert by_id[by_slot["bot"]["id"]]["parent_id"] == "903"
+    assert bad.status_code == 409
