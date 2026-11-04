@@ -2,6 +2,22 @@
 
 ## 2.6.0
 
+- **Training cards.** Before a training of a group with its own channel, the
+  bot posts a card there instead of the reminder: "Bin da", "Kann nicht",
+  "Zurücknehmen" and how many are coming, updated with every click. Once
+  the training is over the buttons go.
+- **Numbers.** A stats channel whose name shows the member count (renamed
+  nightly), and on Mondays the last week's numbers for the admins.
+- **Monday overview.** The next seven days' events in the events channel.
+- **Moderation** (new scope "moderate"): "Melden" on any message sends a card
+  with the message and the reason to the admins (delete / done); people who
+  join and aren't linked members get a card (let in as guest with a role /
+  remove); people who left the club are removed from the server (nightly or
+  "Jetzt entfernen", opt-in).
+- **Feedback after events.** A few hours after an event: 1-5 and a comment,
+  only for those who took part, anonymous; results under "Zahlen &
+  Rückmeldungen".
+
 - **Channel layout.** Kanäle › "Kanäle einrichten" makes #regeln, #ankündigungen,
   #rollen, #anlässe, #anlässe-öffentlich, #bot and #hubra-log in one step, in a
   new or existing category, with the right permissions (public read-only,
