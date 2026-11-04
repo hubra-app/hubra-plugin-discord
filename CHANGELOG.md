@@ -2,6 +2,29 @@
 
 ## 2.6.0
 
+- **Channel layout.** Kanäle › "Kanäle einrichten" makes #regeln, #ankündigungen,
+  #rollen, #anlässe, #anlässe-öffentlich, #bot and #hubra-log in one step, in a
+  new or existing category, with the right permissions (public read-only,
+  members read-only, members can write, admins only), and sets Hubra up to
+  use them. #rollen gets a "Gruppen wählen" button for open groups.
+- **Who sees what.** A new tab checks every channel: everyone on the server,
+  members only, or only some roles. A public channel needs an approval in
+  Hubra ("Öffentlich lassen", audited); "Nur für Mitglieder" fixes it. Also
+  flags @everyone with Administrator, Manage Server/Roles/Channels or
+  @everyone mentions, and group channels anyone can see. Runs every night;
+  new findings go to the bot log.
+- **Member role.** Optional "Mitglied" role for every active, linked member;
+  members-only channels let it in.
+- **Role sync** also follows Hubra roles (e.g. Kassier) and membership types
+  (honorary, passive, trial).
+- **Group and function channels.** Several channels per group, channels for
+  functions (Vorstand, ...), each in a category of your choice and movable
+  later. Polls for a function go to its channel.
+- **Public events channel.** Public events go to their own channel when one
+  is set.
+- **Direct message to members.** From Mitglieder: a short message to all
+  linked members of a group, function, tier, Hubra role or membership type
+  (at most 300, audited).
 - **Settings page in tabs.** Übersicht (main channel, what is posted,
   live messages, the bot's rights), Ankündigungen, Kanäle, Rollen,
   Mitglieder, Nachrichten, Aussehen & Protokoll. One save button per tab.

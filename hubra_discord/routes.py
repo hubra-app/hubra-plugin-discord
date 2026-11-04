@@ -197,6 +197,9 @@ def _club_connection(connection_id: int):
 def _server_call(connection_id: int, fn, status: int = 200):
     from hubra.core.errors import api_error
 
+    from .audit import AuditError
+    from .dm import DmError
+    from .layout import LayoutError
     from .server import ServerError
 
     found, error = _club_connection(connection_id)
@@ -210,7 +213,7 @@ def _server_call(connection_id: int, fn, status: int = 200):
         refuse_during_impersonation()
     try:
         result = fn(member, conn)
-    except ServerError as exc:
+    except (ServerError, AuditError, LayoutError, DmError) as exc:
         db.session.rollback()
         return api_error("DISCORD_FAILED", str(exc), 409)
     db.session.commit()
@@ -283,3 +286,112 @@ def server_stop_message(connection_id: int, key: str):
     from .server import stop
 
     return _server_call(connection_id, lambda m, c: stop(c, key))
+
+
+# ── Channel layout, permission audit, direct messages ────────────────────────
+
+
+def _audit_entry(member, conn, action: str, label: str) -> None:
+    """Approvals and fixes of who sees a channel go to the club's audit log."""
+    from hubra.api.utils import log_audit
+
+    log_audit(member.id, action, "connected_app", conn.id, label[:255])
+
+
+@discord_bp.get("/connections/<int:connection_id>/layout")
+def server_layout(connection_id: int):
+    from .layout import current
+
+    return _server_call(connection_id, lambda m, c: current(c))
+
+
+@discord_bp.post("/connections/<int:connection_id>/layout")
+def server_apply_layout(connection_id: int):
+    from .layout import apply
+
+    body = request.get_json(silent=True) or {}
+    slots = body.get("slots") if isinstance(body.get("slots"), list) else []
+
+    def run(member, conn):
+        result = apply(
+            conn,
+            [str(s) for s in slots],
+            category_id=str(body.get("categoryId") or "") or None,
+            category_name=str(body.get("categoryName") or ""),
+            who=member.name,
+        )
+        if result["made"]:
+            _audit_entry(
+                member,
+                conn,
+                "discord.layout_created",
+                "Discord: " + ", ".join(f"#{m['name']}" for m in result["made"]),
+            )
+        return result
+
+    return _server_call(connection_id, run, 201)
+
+
+@discord_bp.get("/connections/<int:connection_id>/audit")
+def server_audit(connection_id: int):
+    from .audit import run
+
+    return _server_call(connection_id, lambda m, c: run(c))
+
+
+@discord_bp.post("/connections/<int:connection_id>/audit/<string:channel_id>")
+def server_audit_action(connection_id: int, channel_id: str):
+    from . import audit
+
+    action = str((request.get_json(silent=True) or {}).get("action") or "")
+    actions = {
+        "approve": (audit.approve, "discord.channel_public_approved"),
+        "revoke": (audit.revoke, "discord.channel_public_revoked"),
+        "members_only": (audit.members_only, "discord.channel_members_only"),
+    }
+    if action not in actions:
+        from hubra.core.errors import api_error
+
+        return api_error("VALIDATION_ERROR", "Unknown action", 400)
+    fn, audit_action = actions[action]
+
+    def run(member, conn):
+        fn(conn, channel_id, member.name)
+        _audit_entry(member, conn, audit_action, f"Discord-Kanal {channel_id}")
+        return audit.run(conn)
+
+    return _server_call(connection_id, run)
+
+
+@discord_bp.get("/connections/<int:connection_id>/dm")
+def server_dm_preview(connection_id: int):
+    from .dm import preview
+
+    source = str(request.args.get("source") or "")
+    return _server_call(connection_id, lambda m, c: preview(c, source))
+
+
+@discord_bp.post("/connections/<int:connection_id>/dm")
+def server_dm_send(connection_id: int):
+    from .dm import start
+
+    body = request.get_json(silent=True) or {}
+
+    def run(member, conn):
+        result = start(
+            conn,
+            str(body.get("source") or ""),
+            str(body.get("title") or ""),
+            str(body.get("text") or ""),
+            member.name,
+        )
+        _audit_entry(
+            member,
+            conn,
+            "discord.dm_sent",
+            f"Discord-Direktnachricht «{str(body.get('title') or '')[:80]}» an "
+            f"{result['queued']}",
+        )
+        return result
+
+    return _server_call(connection_id, run, 202)

@@ -213,7 +213,38 @@ def sync_all_clubs() -> int:
         sync_connection.delay(connection_id)
         apply_profile.delay(connection_id)
         sync_events.delay(connection_id)
+        audit_connection.delay(connection_id)
     return len(ids)
+
+
+@celery_app.task(name="hubra_discord.tasks.audit_connection")
+def audit_connection(connection_id: int) -> int:
+    """Nightly permission check of the club's server; new findings go to
+    the bot log (audit.py)."""
+    from .audit import nightly
+
+    every = ("announce", "channels", "roles", "commands", "events", "notify")
+    with _connection(connection_id, every) as conn:
+        if conn is None:
+            return 0
+        found = nightly(conn)
+        db.session.commit()
+        return found
+
+
+@celery_app.task(name="hubra_discord.tasks.send_dm_broadcast")
+def send_dm_broadcast(
+    connection_id: int, user_ids: list, title: str, text: str, who: str = ""
+) -> dict | None:
+    """A club admin's direct message to a set of members (dm.py)."""
+    from .dm import send_all
+
+    with _connection(connection_id, "notify") as conn:
+        if conn is None:
+            return None
+        result = send_all(conn, [str(u) for u in user_ids], title, text, who)
+        db.session.commit()
+        return result
 
 
 @celery_app.task(name="hubra_discord.tasks.apply_profile", bind=True, max_retries=3)
@@ -269,17 +300,24 @@ def register_commands(self) -> None:
     acks_late=True,
 )
 def send_to_group_channel(
-    self, connection_id: int, group_id: int, body: dict, ref: str | None = None
+    self,
+    connection_id: int,
+    group_id: int | None,
+    body: dict,
+    ref: str | None = None,
+    source: str | None = None,
 ) -> None:
-    """Post in a group's private channel (its events, polls, reminders)."""
-    from .groups import channel_for_group
+    """Post in a group's or function's private channel (its events, polls,
+    reminders)."""
+    from .groups import channel_for_source
 
+    source = source or f"group:{group_id}"
     with _connection(connection_id, "channels") as conn:
         if conn is None:
             return
-        channel = channel_for_group(conn, group_id)
+        channel = channel_for_source(conn, source)
         if not channel:
-            botlog.skipped(conn, _title(body), f"group {group_id} has no channel")
+            botlog.skipped(conn, _title(body), f"{source} has no channel")
             db.session.commit()
             return
         _send(self, conn, channel, body, "announced", "in the group channel", ref)

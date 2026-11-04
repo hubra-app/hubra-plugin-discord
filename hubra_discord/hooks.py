@@ -87,18 +87,25 @@ def _announce(
     what: str = "",
     ref: str | None = None,
     extra=None,
+    public: bool = False,
 ) -> None:
     from .app import channel_for
     from .tasks import send_announcement
 
     for conn in _connections(tenant_id, "announce"):
         config = conn.config or {}
+        # Public events go to the public events channel when there is one.
+        sent_kind = (
+            "public_events"
+            if public and (config.get("channels") or {}).get("public_events")
+            else kind
+        )
         if not config.get(toggle):
             botlog.skipped(
                 conn, what or kind, f'"{SWITCH_NAMES.get(toggle, toggle)}" is off'
             )
             continue
-        if not channel_for(config, kind):
+        if not channel_for(config, sent_kind):
             botlog.skipped(
                 conn, what or kind, f"no channel picked for {kind} or the main channel"
             )
@@ -116,32 +123,52 @@ def _announce(
         body = payload(config.get("mention"), [item], components)
         if extra is not None:
             body = extra(conn, body)
-        after_commit(send_announcement.delay, conn.id, body, kind, ref)
+        after_commit(send_announcement.delay, conn.id, body, sent_kind, ref)
 
 
 def _to_groups(
-    tenant_id, group_ids, build, what: str = "", ref: str | None = None, extra=None
+    tenant_id,
+    group_ids,
+    build,
+    what: str = "",
+    ref: str | None = None,
+    extra=None,
+    function_ids=(),
 ) -> None:
-    """Post in the private channels of these groups (``channels`` scope)."""
-    from .groups import channel_for_group
+    """Post in the private channels of these groups and functions
+    (``channels`` scope)."""
+    from .groups import channel_for_source
     from .tasks import send_to_group_channel
 
+    sources = [f"group:{int(g)}" for g in group_ids or ()] + [
+        f"function:{int(f)}" for f in function_ids or ()
+    ]
     for conn in _connections(tenant_id, "channels"):
         if not (conn.config or {}).get("group_announce", True):
             botlog.skipped(conn, what, "posting in group channels is off")
             continue
-        if not any(channel_for_group(conn, gid) for gid in group_ids or ()):
+        if not any(channel_for_source(conn, s) for s in sources):
             botlog.skipped(
-                conn, what, "only for some groups, and none of them has a channel"
+                conn,
+                what,
+                "only for some groups or functions, and none of them has a channel",
             )
-        for gid in group_ids or ():
-            if not channel_for_group(conn, gid):
+        for source in sources:
+            if not channel_for_source(conn, source):
                 continue
             item, components = build(conn)
             body = payload(None, [item], components)
             if extra is not None:
                 body = extra(conn, body)
-            after_commit(send_to_group_channel.delay, conn.id, int(gid), body, ref)
+            kind, _, raw = source.partition(":")
+            after_commit(
+                send_to_group_channel.delay,
+                conn.id,
+                int(raw) if kind == "group" else None,
+                body,
+                ref,
+                source,
+            )
 
 
 def _has_group_channel(tenant_id, group_id) -> bool:
@@ -192,6 +219,7 @@ def on_event_published(tenant_id=None, event_id=None, **_):
         build,
         f'Event "{event.title}"',
         live.event_key(event.id),
+        public=bool(event.is_public),
     )
 
 
@@ -280,6 +308,7 @@ def on_poll_published(tenant_id=None, poll_id=None, **_):
             ),
             f'Poll "{poll.question}"',
             live.poll_key(poll.id),
+            function_ids=poll.required_function_ids or (),
         )
         return
     _announce(
@@ -349,6 +378,7 @@ def on_poll_closing(tenant_id=None, poll_id=None, **_):
             lambda c: (poll_closing_embed(poll), _poll_buttons(c, poll)),
             f'Poll closing "{poll.question}"',
             extra=nudge,
+            function_ids=poll.required_function_ids or (),
         )
         # Polls for some groups or functions stay out of the shared
         # channels (a board's question isn't for everyone).

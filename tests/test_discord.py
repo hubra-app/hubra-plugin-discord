@@ -1116,10 +1116,12 @@ def test_nightly_run_refreshes_the_profile(app, db, tenant):
         patch("hubra_discord.tasks.sync_connection.delay"),
         patch("hubra_discord.tasks.sync_events.delay") as events,
         patch("hubra_discord.tasks.apply_profile.delay") as profile,
+        patch("hubra_discord.tasks.audit_connection.delay") as audit,
     ):
         sync_all_clubs.run()
     profile.assert_called_once_with(conn.id)
     events.assert_called_once_with(conn.id)
+    audit.assert_called_once_with(conn.id)
 
 
 # ── Direct messages (notifications) ──────────────────────────────────────────
@@ -2451,3 +2453,366 @@ def test_server_api_needs_the_right(client, db, tenant):
     assert client.get(
         f"/api/v1/discord/connections/{conn.id}/channels", headers=H
     ).status_code in (401, 403)
+
+
+# ── Channel layout, permission audit, member role, DMs, group channels ──────
+
+
+class LayoutServer(ChannelServer):
+    """ChannelServer that also makes roles and takes permission overwrites."""
+
+    def __init__(self, everyone_bits=(1 << 10) | (1 << 11) | (1 << 14)):
+        super().__init__()
+        self.everyone_bits = everyone_bits
+        self.roles = [
+            {"id": GUILD, "name": "@everyone", "permissions": str(everyone_bits)},
+            {"id": "950", "name": "Hubra", "permissions": str(1 << 4), "managed": True},
+        ]
+        self.next_id = 2000
+
+    def _id(self):
+        self.next_id += 1
+        return str(self.next_id)
+
+    def __call__(self, method, path, body=None, **kw):
+        if path == f"/guilds/{GUILD}/channels" and method == "POST":
+            self.calls.append((method, path, body))
+            made = {"id": self._id(), "guild_id": GUILD, **body}
+            self.channels.append(made)
+            return made
+        if path == f"/guilds/{GUILD}/roles" and method == "GET":
+            self.calls.append((method, path, body))
+            return self.roles
+        if path == f"/guilds/{GUILD}/roles" and method == "POST":
+            self.calls.append((method, path, body))
+            role = {"id": self._id(), "name": body["name"], "permissions": "0"}
+            self.roles.append(role)
+            return role
+        if "/permissions/" in path and method == "PUT":
+            self.calls.append((method, path, body))
+            cid, oid = path.split("/")[2], path.split("/")[4]
+            channel = next(c for c in self.channels if c["id"] == cid)
+            kept = [
+                o for o in channel.get("permission_overwrites") or [] if o["id"] != oid
+            ]
+            channel["permission_overwrites"] = [*kept, {"id": oid, **body}]
+            return None
+        if path.endswith("/messages") and method == "POST":
+            self.calls.append((method, path, body))
+            return {"id": "m1"}
+        return super().__call__(method, path, body, **kw)
+
+
+def test_layout_makes_channels_with_the_right_permissions(
+    client, db, club_auth, tenant, discord_settings
+):
+    conn = _conn(
+        db, tenant, scopes=("announce", "channels", "commands"), channel_id=None
+    )
+    server = LayoutServer()
+    base = f"/api/v1/discord/connections/{conn.id}/layout"
+    with patch.object(api, "bot", side_effect=server):
+        resp = client.post(
+            base,
+            json={
+                "slots": ["rules", "announcements", "roles", "events", "public_events"],
+                "categoryName": "Verein",
+            },
+            headers=H,
+        )
+        assert resp.status_code == 201, resp.get_json()
+        made = {m["slot"]: m for m in resp.get_json()["made"]}
+        assert set(made) == {
+            "category",
+            "rules",
+            "announcements",
+            "roles",
+            "events",
+            "public_events",
+        }
+        state = client.get(base, headers=H).get_json()
+    db.session.refresh(conn)
+    config = conn.config
+    role = config["auto_member_role"]["role_id"]
+    assert config["member_role"] is True
+    by_id = {c["id"]: c for c in server.channels}
+    # Everyone reads the rules; nobody but the bot writes there.
+    rules = by_id[made["rules"]["id"]]
+    everyone = next(o for o in rules["permission_overwrites"] if o["id"] == GUILD)
+    assert int(everyone["allow"]) & api.VIEW_CHANNEL
+    assert int(everyone["deny"]) & api.SEND_MESSAGES
+    # Events are for members: @everyone can't see them, the member role can.
+    events = by_id[made["events"]["id"]]
+    overwrites = {o["id"]: o for o in events["permission_overwrites"]}
+    assert int(overwrites[GUILD]["deny"]) & api.VIEW_CHANNEL
+    assert int(overwrites[role]["allow"]) & api.VIEW_CHANNEL
+    assert all(c.get("parent_id") == made["category"]["id"] for c in (rules, events))
+    # Wired up in Hubra, public ones approved.
+    assert config["channel_id"] == made["announcements"]["id"]
+    assert config["channels"]["events"] == made["events"]["id"]
+    assert config["channels"]["public_events"] == made["public_events"]["id"]
+    assert config["members_only_events"] is True
+    assert {a["id"] for a in config["public_ok"]} == {
+        made["rules"]["id"],
+        made["public_events"]["id"],
+    }
+    # The roles channel got its "Gruppen wählen" button.
+    panel = [b for m, p, b in server.calls if p.endswith("/messages")][0]
+    assert panel["components"][0]["components"][0]["custom_id"] == "gpick"
+    assert {s["key"]: s["channelId"] for s in state["slots"]}["rules"] == made["rules"][
+        "id"
+    ]
+    # Again: nothing new.
+    with patch.object(api, "bot", side_effect=server):
+        again = client.post(base, json={"slots": ["rules"]}, headers=H).get_json()
+    assert again["made"] == [] and again["kept"] == ["rules"]
+
+
+def test_audit_flags_public_channels_until_approved_or_fixed(
+    client, db, club_auth, tenant, discord_settings
+):
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    server = LayoutServer(everyone_bits=(1 << 10) | (1 << 17))
+    base = f"/api/v1/discord/connections/{conn.id}/audit"
+    with patch.object(api, "bot", side_effect=server):
+        result = client.get(base, headers=H).get_json()
+        rows = {c["id"]: c for c in result["channels"]}
+        assert rows[CHANNEL]["access"] == "public"
+        assert rows["904"]["access"] == "private"
+        assert {f["channelId"] for f in result["findings"]} == {CHANNEL, "905"}
+        assert any("@everyone erwähnen" in t for t in result["server"])
+        # Approve one: no longer a finding.
+        result = client.post(
+            f"{base}/{CHANNEL}", json={"action": "approve"}, headers=H
+        ).get_json()
+        assert {f["channelId"] for f in result["findings"]} == {"905"}
+        assert {c["id"]: c for c in result["channels"]}[CHANNEL]["approved"]
+        # Fix the other: members only, with the member role made for it.
+        result = client.post(
+            f"{base}/905", json={"action": "members_only"}, headers=H
+        ).get_json()
+        assert result["findings"] == []
+        assert {c["id"]: c for c in result["channels"]}["905"]["access"] == "members"
+    db.session.refresh(conn)
+    assert conn.config["member_role"] is True
+    from hubra.core.models.audit import AuditEntry
+
+    actions = {a.action for a in db.session.query(AuditEntry).all()}
+    assert {
+        "discord.channel_public_approved",
+        "discord.channel_members_only",
+    } <= actions
+
+
+def test_nightly_audit_reports_a_finding_once(app, db, tenant, discord_settings):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.audit import nightly
+
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    server = LayoutServer()
+    with in_club(tenant), patch.object(api, "bot", side_effect=server):
+        assert nightly(conn) == 2  # #news and the voice channel
+        assert nightly(conn) == 0
+
+
+def test_group_and_function_channels_in_a_category(
+    client, db, club_auth, tenant, discord_settings
+):
+    from hubra.core.models.function import Function
+    from hubra.core.models.group import Group
+
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    u17 = Group(name="U17", visibility="open")
+    board = Function(name="Vorstand")
+    db.session.add_all([u17, board])
+    db.session.commit()
+    server = LayoutServer()
+    url = f"/api/v1/apps/connections/{conn.id}"
+    wanted = [
+        {"source": f"group:{u17.id}", "categoryId": "903"},
+        {"source": f"group:{u17.id}", "name": "u17-eltern", "categoryId": "903"},
+        {"source": f"function:{board.id}"},
+    ]
+    with (
+        patch.object(api, "bot", side_effect=server),
+        patch("hubra_discord.tasks.sync_connection.delay"),
+    ):
+        resp = client.patch(url, json={"config": {"group_channels": wanted}}, headers=H)
+        assert resp.status_code == 200, resp.get_json()
+    db.session.refresh(conn)
+    entries = conn.config["group_channels"]
+    assert [e["channel_name"] for e in entries] == ["u17", "u17-eltern", "vorstand"]
+    # One role per group, shared by its channels.
+    assert entries[0]["role_id"] == entries[1]["role_id"] != entries[2]["role_id"]
+    assert entries[0]["category_id"] == "903" and entries[2]["category_id"] is None
+    made = [b for m, p, b in server.calls if m == "POST" and p.endswith("/channels")]
+    assert made[0]["parent_id"] == "903" and "parent_id" not in made[2]
+    # Move the board's channel into a category; keep the others.
+    keep = [{"source": e["source"], "channelId": e["channel_id"]} for e in entries]
+    keep[0]["categoryId"] = keep[1]["categoryId"] = "903"
+    keep[2]["categoryId"] = "800"
+    with (
+        patch.object(api, "bot", side_effect=server),
+        patch("hubra_discord.tasks.sync_connection.delay"),
+    ):
+        resp = client.patch(url, json={"config": {"group_channels": keep}}, headers=H)
+        assert resp.status_code == 200, resp.get_json()
+    moved = [b for m, p, b in server.calls if m == "PATCH"]
+    assert moved == [{"parent_id": "800"}]
+    db.session.refresh(conn)
+    assert len(conn.config["group_channels"]) == 3
+
+
+def test_function_polls_go_to_the_function_channel(app, db, tenant):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.hooks import _to_groups
+
+    conn = _conn(
+        db,
+        tenant,
+        scopes=("announce", "channels"),
+        group_channels=[
+            {
+                "source": "function:7",
+                "function_id": 7,
+                "channel_id": "777",
+                "role_id": "70",
+                "name": "Vorstand",
+            }
+        ],
+    )
+    with (
+        in_club(tenant),
+        patch("hubra_discord.hooks.after_commit") as later,
+    ):
+        _to_groups(
+            tenant.id,
+            [],
+            lambda c: ({"title": "Beschluss"}, None),
+            "Poll",
+            function_ids=[7],
+        )
+    args = later.call_args.args
+    assert args[1] == conn.id and args[-1] == "function:7"
+
+
+def test_public_events_go_to_the_public_channel(app, db, tenant):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.hooks import _announce
+
+    _conn(
+        db,
+        tenant,
+        scopes=("announce",),
+        channels={"events": "801", "public_events": "802"},
+    )
+    with in_club(tenant), patch("hubra_discord.hooks.after_commit") as later:
+        _announce(
+            tenant.id,
+            "events",
+            "announce_events",
+            lambda c: {"title": "x"},
+            public=True,
+        )
+        _announce(tenant.id, "events", "announce_events", lambda c: {"title": "y"})
+    kinds = [c.args[3] for c in later.call_args_list]
+    assert kinds == ["public_events", "events"]
+
+
+def test_role_sync_follows_hubra_roles_and_membership_types(app, db, tenant, seeded_db):
+    from hubra.core.models.role import Role
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.roles import matches, sources
+
+    with in_club(tenant):
+        admin = seeded_db["admin"]
+        admin.status = "active"
+        admin.membership_type = "honorary"
+        role = Role(name="Kassier")
+        db.session.add(role)
+        admin.roles.append(role)
+        db.session.commit()
+        keys = {s["key"] for s in sources()}
+        assert f"role:{role.id}" in keys and "type:honorary" in keys
+        assert matches(f"role:{role.id}", admin)
+        assert matches("type:honorary", admin)
+        assert not matches("type:passive", admin)
+
+
+def test_member_role_is_made_and_given(app, db, tenant, trainer, discord_settings):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import roles
+
+    conn = _conn(db, tenant, scopes=("announce", "roles"), member_role=True)
+    server = LayoutServer()
+    given = []
+    with (
+        in_club(tenant),
+        patch.object(api, "bot", side_effect=server),
+        patch.object(api, "member", return_value={"roles": []}),
+        patch.object(api, "add_role", side_effect=lambda g, u, r, why: given.append(r)),
+    ):
+        roles.sync_all(conn)
+    role = conn.config["auto_member_role"]["role_id"]
+    assert given == [role]
+    assert any(r["name"] == "Mitglied" for r in server.roles)
+
+
+def test_dm_to_a_group(client, db, club_auth, tenant, trainer, discord_settings):
+    conn = _conn(db, tenant, scopes=("announce", "notify"))
+    base = f"/api/v1/discord/connections/{conn.id}/dm"
+    source = f"group:{trainer.id}"
+    assert client.get(f"{base}?source={source}", headers=H).get_json()["count"] == 1
+    with patch("hubra_discord.tasks.send_dm_broadcast.delay") as queued:
+        resp = client.post(
+            base,
+            json={"source": source, "title": "Training fällt aus", "text": "Regen."},
+            headers=H,
+        )
+        assert resp.status_code == 202, resp.get_json()
+    assert queued.call_args.args[1] == ["42"]
+    # The task sends and counts closed DMs.
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.dm import send_all
+
+    def closed(user_id, body):
+        raise DiscordError("closed", status=403)
+
+    with in_club(tenant), patch.object(api, "dm", side_effect=closed):
+        assert send_all(conn, ["42"], "T", "x", "Anna") == {
+            "sent": 0,
+            "closed": 1,
+            "failed": 0,
+        }
+    # Without the notify scope: refused.
+    conn.scopes = ["announce"]
+    db.session.commit()
+    resp = client.post(
+        base,
+        json={"source": source, "title": "x", "text": "y"},
+        headers=H,
+    )
+    assert resp.status_code == 409
+
+
+def test_roles_channel_button_shows_the_groups(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.group import Group
+
+    _conn(db, tenant)
+    db.session.add(Group(name="Chor", visibility="open"))
+    db.session.commit()
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": "gpick"},
+    }
+    answer = _signed(client, click).get_json()
+    assert answer["type"] == 4 and "Chor" in answer["data"]["content"]
+    assert answer["data"]["flags"] == 64

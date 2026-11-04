@@ -7,7 +7,6 @@ import {
   Button,
   Checkbox,
   Group,
-  MultiSelect,
   Paper,
   Select,
   SimpleGrid,
@@ -43,10 +42,31 @@ interface Options {
 }
 
 interface GroupChannel {
-  group_id: number
+  source?: string
+  group_id?: number
+  function_id?: number
   channel_id: string
   role_id: string
   name: string
+  channel_name?: string
+  category_id?: string | null
+}
+
+/** One row of the group and function channels editor. */
+interface GroupRow {
+  source: string
+  channelId: string | null
+  name: string
+  categoryId: string | null
+}
+
+function groupRows(list: GroupChannel[]): GroupRow[] {
+  return list.map((g) => ({
+    source: g.source ?? `group:${g.group_id}`,
+    channelId: g.channel_id,
+    name: g.channel_name ?? '',
+    categoryId: g.category_id ?? null,
+  }))
 }
 
 interface RoleMapping {
@@ -54,7 +74,7 @@ interface RoleMapping {
   role_id: string
 }
 
-type Kind = 'events' | 'posts' | 'polls' | 'reminders'
+type Kind = 'events' | 'posts' | 'polls' | 'reminders' | 'public_events'
 
 interface DiscordConfig {
   channel_id: string | null
@@ -81,6 +101,8 @@ interface DiscordConfig {
   log_channel_id: string | null
   log_level: 'errors' | 'all'
   nudge_voters: boolean
+  member_role: boolean
+  member_role_name: string
 }
 
 const MAX_WELCOME = 1500
@@ -92,6 +114,12 @@ const KINDS: {
   label: string
 }[] = [
   { kind: 'events', toggle: 'announce_events', labelKey: 'discord.events', label: 'Neue Anlässe' },
+  {
+    kind: 'public_events',
+    toggle: 'announce_events',
+    labelKey: 'discord.publicEvents',
+    label: 'Öffentliche Anlässe (eigener Kanal, sonst wie Anlässe)',
+  },
   { kind: 'posts', toggle: 'announce_posts', labelKey: 'discord.posts', label: 'Neue Beiträge' },
   { kind: 'polls', toggle: 'announce_polls', labelKey: 'discord.polls', label: 'Neue Umfragen' },
   {
@@ -129,6 +157,8 @@ function readConfig(c: Connection): DiscordConfig {
     log_channel_id: raw.log_channel_id ?? null,
     log_level: raw.log_level ?? 'errors',
     nudge_voters: raw.nudge_voters ?? false,
+    member_role: raw.member_role ?? false,
+    member_role_name: raw.member_role_name ?? '',
   }
 }
 
@@ -137,21 +167,24 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const { t } = useT()
   const { notify } = useToast()
   const [config, setConfig] = useState(() => readConfig(connection))
-  const [groupIds, setGroupIds] = useState<string[]>(() =>
-    readConfig(connection).group_channels.map((g) => String(g.group_id)),
-  )
+  const [rows, setRows] = useState<GroupRow[]>(() => groupRows(readConfig(connection).group_channels))
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<string>('overview')
   useEffect(() => {
     const next = readConfig(connection)
     setConfig(next)
-    setGroupIds(next.group_channels.map((g) => String(g.group_id)))
+    setRows(groupRows(next.group_channels))
   }, [connection])
 
   const options = useQuery({
     queryKey: ['discord-options', connection.id],
     queryFn: () => getConnectionOptions<Options>(connection.id),
     enabled: connection.provider === 'discord',
+  })
+  const server = useQuery({
+    queryKey: ['discord-server-channels', connection.id],
+    queryFn: () => apiFetch<ServerChannels>(`/discord/connections/${connection.id}/channels`),
+    enabled: connection.provider === 'discord' && connection.scopes.includes('channels'),
   })
   if (connection.provider !== 'discord') return null
   if (options.isError)
@@ -170,12 +203,25 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const dms = connection.scopes.includes('notify')
   const missing = options.data.missingPermissions ?? []
   const channelProblems = options.data.channelProblems ?? []
-  const savedGroups = config.group_channels.map((g) => String(g.group_id))
-  const groupsChanged =
-    groupIds.length !== savedGroups.length || groupIds.some((g, i) => g !== savedGroups[i])
+  const groupsChanged = JSON.stringify(rows) !== JSON.stringify(groupRows(config.group_channels))
   const groupData = options.data.sources
-    .filter((s) => s.kind === 'group')
-    .map((s) => ({ value: s.key.slice('group:'.length), label: s.label }))
+    .filter((s) => s.kind === 'group' || s.kind === 'function')
+    .map((s) => ({
+      value: s.key,
+      label:
+        s.kind === 'function'
+          ? t('discord.functionLabel', '{{name}} (Funktion)', { name: s.label })
+          : s.label,
+    }))
+  const sourceName = (key: string) => groupData.find((g) => g.value === key)?.label ?? key
+  const categoryData = [
+    { value: '', label: t('discord.ch.noCategory', 'Ohne Kategorie') },
+    ...(server.data?.channels ?? [])
+      .filter((c) => c.kind === 'category')
+      .map((c) => ({ value: c.id, label: c.name })),
+  ]
+  const setRow = (i: number, patch: Partial<GroupRow>) =>
+    setRows((list) => list.map((r, j) => (j === i ? { ...r, ...patch } : r)))
   const set = (patch: Partial<DiscordConfig>) => setConfig((c) => ({ ...c, ...patch }))
   const channelData = options.data.channels.map((c) => ({ value: c.id, label: `#${c.name}` }))
   const roleName = (id: string) => options.data.roles.find((r) => r.id === id)?.name ?? id
@@ -207,6 +253,8 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
       if (roles) {
         sent.role_map = config.role_map.filter((m) => m.source && m.role_id)
         sent.group_roles = config.group_roles
+        sent.member_role = config.member_role
+        sent.member_role_name = config.member_role_name
       }
       if (commands) {
         sent.poll_buttons = config.poll_buttons
@@ -216,7 +264,15 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
       if (channels) {
         sent.group_announce = config.group_announce
         // Only when the list changed: each save checks the channels on Discord.
-        if (groupsChanged) (sent as Record<string, unknown>).group_channels = groupIds.map(Number)
+        if (groupsChanged)
+          (sent as Record<string, unknown>).group_channels = rows
+            .filter((r) => r.source)
+            .map((r) => ({
+              source: r.source,
+              channelId: r.channelId,
+              name: r.name,
+              categoryId: r.categoryId,
+            }))
       }
       if (dms) {
         sent.welcome_dm = config.welcome_dm
@@ -294,6 +350,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           <Tabs.Tab value="overview">{t('discord.tab.overview', 'Übersicht')}</Tabs.Tab>
           {announce && <Tabs.Tab value="announce">{t('discord.tab.announce', 'Ankündigungen')}</Tabs.Tab>}
           <Tabs.Tab value="channels">{t('discord.tab.channels', 'Kanäle')}</Tabs.Tab>
+          <Tabs.Tab value="audit">{t('discord.tab.audit', 'Wer sieht was')}</Tabs.Tab>
           {roles && <Tabs.Tab value="roles">{t('discord.tab.roles', 'Rollen')}</Tabs.Tab>}
           {(commands || events || dms) && (
             <Tabs.Tab value="members">{t('discord.tab.members', 'Mitglieder')}</Tabs.Tab>
@@ -408,6 +465,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           )}
         <Tabs.Panel value="channels" pt="md">
           <Stack gap="md">
+            {channels && <LayoutCard connection={connection} />}
             <ChannelsPanel connection={connection} />
             {channels && (
               <Stack gap="sm">
@@ -415,25 +473,65 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                     <Text fw={600} size="sm" mt="xs">
                       {t('discord.groupChannels', 'Gruppenkanäle')}
                     </Text>
-                    <MultiSelect
-                      label={t('discord.groupChannelsPick', 'Private Kanäle für diese Gruppen')}
-                      description={t(
-                        'discord.groupChannelsHint',
-                        'Der Bot legt pro Gruppe einen Kanal und eine Rolle an. Sehen können ihn nur Gruppenmitglieder, die ihr Discord-Konto verknüpft haben. Entfernte Gruppen behalten ihren Kanal, der Bot pflegt ihn nur nicht mehr.',
+                    <Text size="xs" c="dimmed">
+                      {t(
+                        'discord.groupChannelsHint2',
+                        'Private Kanäle für Gruppen und Funktionen (Vorstand, Trainer, …), auch mehrere pro Gruppe. Der Bot legt pro Gruppe oder Funktion eine Rolle an; sehen können die Kanäle nur, wer dazugehört und Discord verknüpft hat. Entfernte Kanäle bleiben auf Discord, der Bot pflegt sie nur nicht mehr.',
                       )}
-                      placeholder={t('discord.pickGroups', 'Gruppen wählen')}
-                      data={groupData}
-                      value={groupIds}
-                      onChange={setGroupIds}
-                      maxValues={25}
-                      searchable
-                      clearable
-                    />
-                    {config.group_channels.length > 0 && (
-                      <Text size="xs" c="dimmed">
-                        {config.group_channels.map((g) => `#${g.name}`).join(', ')}
-                      </Text>
-                    )}
+                    </Text>
+                    {rows.map((r, i) => (
+                      <Group key={r.channelId ?? `new-${i}`} gap="xs" wrap="wrap" align="flex-end">
+                        <Select
+                          style={{ flex: '2 1 180px' }}
+                          size="xs"
+                          label={i === 0 ? t('discord.groupOrFunction', 'Gruppe oder Funktion') : undefined}
+                          data={groupData}
+                          value={r.source || null}
+                          disabled={!!r.channelId}
+                          searchable
+                          onChange={(v) => setRow(i, { source: v ?? '' })}
+                        />
+                        <TextInput
+                          style={{ flex: '2 1 160px' }}
+                          size="xs"
+                          label={i === 0 ? t('discord.channelName', 'Kanalname') : undefined}
+                          placeholder={r.source ? sourceName(r.source).toLowerCase() : ''}
+                          value={r.channelId ? `#${r.name}` : r.name}
+                          disabled={!!r.channelId}
+                          maxLength={100}
+                          onChange={(e) => setRow(i, { name: e.currentTarget.value })}
+                        />
+                        <Select
+                          style={{ flex: '1 1 140px' }}
+                          size="xs"
+                          label={i === 0 ? t('discord.ch.parent', 'Kategorie') : undefined}
+                          data={categoryData}
+                          value={r.categoryId ?? ''}
+                          onChange={(v) => setRow(i, { categoryId: v || null })}
+                        />
+                        <ActionIcon
+                          variant="subtle"
+                          color="red"
+                          mb={4}
+                          aria-label={t('discord.remove', 'Entfernen')}
+                          onClick={() => setRows(rows.filter((_, j) => j !== i))}
+                        >
+                          ✕
+                        </ActionIcon>
+                      </Group>
+                    ))}
+                    <Group>
+                      <Button
+                        variant="default"
+                        size="xs"
+                        disabled={rows.length >= 40}
+                        onClick={() =>
+                          setRows([...rows, { source: '', channelId: null, name: '', categoryId: null }])
+                        }
+                      >
+                        {t('discord.addGroupChannel', 'Kanal hinzufügen')}
+                      </Button>
+                    </Group>
                     <Switch
                       label={t('discord.groupAnnounce', 'Anlässe und Umfragen der Gruppe dort ankündigen')}
                       checked={config.group_announce}
@@ -443,6 +541,9 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
               </Stack>
             )}
           </Stack>
+        </Tabs.Panel>
+        <Tabs.Panel value="audit" pt="md">
+          <AuditPanel connection={connection} canFix={channels} />
         </Tabs.Panel>
         {roles && settingsTab('roles', <>
               {roles && (
@@ -465,6 +566,35 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                     checked={config.group_roles}
                     onChange={(e) => set({ group_roles: e.currentTarget.checked })}
                   />
+                  <Group gap="sm" align="flex-end" wrap="wrap">
+                    <Switch
+                      style={{ flex: '2 1 260px' }}
+                      label={t('discord.memberRole', 'Rolle für alle Mitglieder')}
+                      description={t(
+                        'discord.memberRoleHint',
+                        'Alle aktiven, verknüpften Mitglieder bekommen sie, Ausgetretene und Gesperrte verlieren sie. Kanäle «nur für Mitglieder» geben diese Rolle frei.',
+                      )}
+                      checked={config.member_role}
+                      onChange={(e) => set({ member_role: e.currentTarget.checked })}
+                    />
+                    {config.member_role && (
+                      <TextInput
+                        style={{ flex: '1 1 160px' }}
+                        size="xs"
+                        label={t('discord.memberRoleName', 'Name der Rolle')}
+                        placeholder="Mitglied"
+                        maxLength={100}
+                        value={config.member_role_name}
+                        onChange={(e) => set({ member_role_name: e.currentTarget.value })}
+                      />
+                    )}
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {t(
+                      'discord.roleSourcesHint',
+                      'Zuordnen geht nach Gruppe, Funktion, Beitragskategorie, Hubra-Rolle (z. B. Kassier) oder Mitgliedsart (Ehren-, Passiv-, Probemitglieder).',
+                    )}
+                  </Text>
                   {config.role_map.map((m, i) => (
                     <Group key={i} gap="xs" wrap="nowrap" align="flex-end">
                       <Select
@@ -620,6 +750,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                         onChange={(e) => set({ welcome_text: e.currentTarget.value })}
                       />
                     )}
+                    <DmCard connection={connection} sources={options.data.sources} />
                   </>
                 )}
             </>,
@@ -1046,7 +1177,7 @@ function ChannelsPanel({ connection }: { connection: Connection }) {
                       {t('discord.ch.edit', 'Ändern')}
                     </Button>
                   )}
-                  {data.canManage && c.madeByHubra && c.uses.every((u) => u.startsWith('Gruppe ')) && (
+                  {data.canManage && c.madeByHubra && c.uses.every((u) => u.startsWith('Gruppe ') || u.startsWith('Funktion ')) && (
                     <Button
                       size="compact-xs"
                       variant="subtle"
@@ -1132,6 +1263,477 @@ function ChannelsPanel({ connection }: { connection: Connection }) {
         onClose={() => setToDelete(null)}
       />
     </Stack>
+  )
+}
+
+// ── Kanäle einrichten ────────────────────────────────────────────────────────
+
+interface LayoutState {
+  slots: { key: string; name: string; access: string; channelId: string | null; channelName: string | null }[]
+  categories: { id: string; name: string }[]
+  hasScope: boolean
+}
+
+const SLOT_TEXT: Record<string, { key: string; label: string }> = {
+  rules: { key: 'discord.lay.rules', label: 'Regeln: alle lesen, niemand schreibt' },
+  announcements: { key: 'discord.lay.announcements', label: 'Ankündigungen: Mitglieder lesen, wird Hauptkanal' },
+  roles: { key: 'discord.lay.roles', label: 'Rollen: Knopf «Gruppen wählen» für offene Gruppen' },
+  events: { key: 'discord.lay.events', label: 'Anlässe intern: Mitglieder lesen und melden sich an' },
+  public_events: { key: 'discord.lay.publicEvents', label: 'Anlässe öffentlich: alle sehen öffentliche Anlässe' },
+  bot: { key: 'discord.lay.bot', label: 'Bot: Mitglieder schreiben Befehle (/hilfe)' },
+  log: { key: 'discord.lay.log', label: 'Bot-Protokoll: nur Admins' },
+}
+
+const ACCESS_COLOR: Record<string, string> = {
+  public_read: 'orange',
+  members_read: 'violet',
+  members_write: 'violet',
+  private: 'gray',
+}
+
+function LayoutCard({ connection }: { connection: Connection }) {
+  const { t } = useT()
+  const { notify } = useToast()
+  const queryClient = useQueryClient()
+  const key = ['discord-layout', connection.id]
+  const [open, setOpen] = useState(false)
+  const query = useQuery({
+    queryKey: key,
+    queryFn: () => apiFetch<LayoutState>(`/discord/connections/${connection.id}/layout`),
+    enabled: open,
+  })
+  const [picked, setPicked] = useState<string[]>(['rules', 'announcements', 'roles', 'events', 'bot'])
+  const [category, setCategory] = useState<string>('new')
+  const [categoryName, setCategoryName] = useState('Verein')
+  const [busy, setBusy] = useState(false)
+  const access = (a: string) =>
+    a === 'public_read'
+      ? t('discord.lay.public', 'öffentlich')
+      : a === 'private'
+        ? t('discord.lay.private', 'privat')
+        : t('discord.lay.members', 'nur Mitglieder')
+
+  if (!open)
+    return (
+      <Paper withBorder p="sm">
+        <Group justify="space-between" wrap="wrap" gap="xs">
+          <div>
+            <Text fw={600} size="sm">
+              {t('discord.lay.title', 'Kanäle einrichten')}
+            </Text>
+            <Text size="xs" c="dimmed">
+              {t(
+                'discord.lay.teaser',
+                'Regeln, Ankündigungen, Rollen, Anlässe (intern und öffentlich), Bot und Protokoll in einem Schritt, mit den richtigen Berechtigungen.',
+              )}
+            </Text>
+          </div>
+          <Button size="xs" variant="light" onClick={() => setOpen(true)}>
+            {t('discord.lay.open', 'Einrichten')}
+          </Button>
+        </Group>
+      </Paper>
+    )
+  const data = query.data
+  const run = async () => {
+    setBusy(true)
+    try {
+      const body =
+        category === 'new' ? { slots: picked, categoryName } : { slots: picked, categoryId: category || null }
+      const result = await apiFetch<{ made: { name: string }[] }>(`/discord/connections/${connection.id}/layout`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+      notify(
+        'success',
+        result.made.length
+          ? t('discord.lay.done', 'Angelegt: {{names}}', { names: result.made.map((m) => '#' + m.name).join(', ') })
+          : t('discord.lay.nothing', 'Alles schon da'),
+      )
+      for (const k of [key, ['discord-server-channels', connection.id], ['discord-options', connection.id], ['discord-audit', connection.id]])
+        await queryClient.invalidateQueries({ queryKey: k })
+    } catch (err) {
+      notify('error', t('discord.ch.failed', 'Das ging nicht'), (err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Paper withBorder p="sm">
+      <Stack gap="xs">
+        <Text fw={600} size="sm">
+          {t('discord.lay.title', 'Kanäle einrichten')}
+        </Text>
+        <Text size="xs" c="dimmed">
+          {t(
+            'discord.lay.hint',
+            'Der Bot legt die gewählten Kanäle an und richtet Hubra darauf ein. «Nur Mitglieder» braucht die Mitglied-Rolle; sie wird dafür eingeschaltet. Öffentliche Kanäle gelten damit als freigegeben.',
+          )}
+        </Text>
+        {!data && <Text c="dimmed" size="sm">{t('discord.loading', 'Lädt …')}</Text>}
+        {data &&
+          data.slots.map((slot) => (
+            <Group key={slot.key} gap="xs" wrap="nowrap">
+              <Checkbox
+                size="xs"
+                disabled={!!slot.channelId}
+                checked={!!slot.channelId || picked.includes(slot.key)}
+                onChange={(e) =>
+                  setPicked(
+                    e.currentTarget.checked ? [...picked, slot.key] : picked.filter((p) => p !== slot.key),
+                  )
+                }
+                label={
+                  <Text size="sm">
+                    <b>#{slot.channelName ?? slot.name}</b> · {t(SLOT_TEXT[slot.key]?.key ?? slot.key, SLOT_TEXT[slot.key]?.label ?? slot.key)}
+                  </Text>
+                }
+              />
+              <Badge size="xs" variant="light" color={ACCESS_COLOR[slot.access] ?? 'gray'}>
+                {access(slot.access)}
+              </Badge>
+              {slot.channelId && (
+                <Badge size="xs" variant="outline" color="green">
+                  {t('discord.lay.there', 'schon da')}
+                </Badge>
+              )}
+            </Group>
+          ))}
+        {data && (
+          <Group gap="xs" align="flex-end" wrap="wrap">
+            <Select
+              size="xs"
+              style={{ flex: '1 1 200px' }}
+              label={t('discord.ch.parent', 'Kategorie')}
+              data={[
+                { value: 'new', label: t('discord.lay.newCategory', 'Neue Kategorie') },
+                { value: '', label: t('discord.ch.noCategory', 'Ohne Kategorie') },
+                ...data.categories.map((c) => ({ value: c.id, label: c.name })),
+              ]}
+              value={category}
+              allowDeselect={false}
+              onChange={(v) => setCategory(v ?? 'new')}
+            />
+            {category === 'new' && (
+              <TextInput
+                size="xs"
+                style={{ flex: '1 1 160px' }}
+                label={t('discord.lay.categoryName', 'Name der Kategorie')}
+                value={categoryName}
+                maxLength={100}
+                onChange={(e) => setCategoryName(e.currentTarget.value)}
+              />
+            )}
+            <Button size="xs" variant="subtle" onClick={() => setOpen(false)}>
+              {t('common.cancel', 'Abbrechen')}
+            </Button>
+            <Button
+              size="xs"
+              loading={busy}
+              disabled={!data.hasScope || !picked.some((p) => !data.slots.find((s) => s.key === p)?.channelId)}
+              onClick={run}
+            >
+              {t('discord.lay.make', 'Kanäle anlegen')}
+            </Button>
+          </Group>
+        )}
+      </Stack>
+    </Paper>
+  )
+}
+
+// ── Wer sieht was ────────────────────────────────────────────────────────────
+
+interface AuditRow {
+  id: string
+  name: string
+  kind: string
+  parentId: string | null
+  access: 'public' | 'members' | 'private'
+  uses: string[]
+  approved: { by: string; at: string } | null
+  problem: string | null
+  url: string
+}
+
+interface AuditResult {
+  channels: AuditRow[]
+  findings: { channelId: string; text: string }[]
+  server: string[]
+  memberRole: string | null
+  checkedAt: string
+}
+
+function AuditPanel({ connection, canFix }: { connection: Connection; canFix: boolean }) {
+  const { t } = useT()
+  const { notify } = useToast()
+  const queryClient = useQueryClient()
+  const key = ['discord-audit', connection.id]
+  const query = useQuery({
+    queryKey: key,
+    queryFn: () => apiFetch<AuditResult>(`/discord/connections/${connection.id}/audit`),
+  })
+  const [busy, setBusy] = useState<string | null>(null)
+  const act = async (row: AuditRow, action: 'approve' | 'revoke' | 'members_only') => {
+    setBusy(row.id + action)
+    try {
+      const result = await apiFetch<AuditResult>(`/discord/connections/${connection.id}/audit/${row.id}`, {
+        method: 'POST',
+        body: JSON.stringify({ action }),
+      })
+      queryClient.setQueryData(key, result)
+      await queryClient.invalidateQueries({ queryKey: ['discord-server-channels', connection.id] })
+      notify(
+        'success',
+        action === 'approve'
+          ? t('discord.au.approved', '#{{name}} bleibt öffentlich', { name: row.name })
+          : action === 'revoke'
+            ? t('discord.au.revoked', 'Freigabe zurückgenommen')
+            : t('discord.au.fixed', '#{{name}} ist jetzt nur für Mitglieder', { name: row.name }),
+      )
+    } catch (err) {
+      notify('error', t('discord.ch.failed', 'Das ging nicht'), (err as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+  if (query.isLoading) return <Text c="dimmed">{t('discord.loading', 'Lädt …')}</Text>
+  if (query.isError)
+    return (
+      <Alert color="red" variant="light">
+        {(query.error as Error).message}
+      </Alert>
+    )
+  const data = query.data as AuditResult
+  const rows = data.channels.filter((c) => c.kind !== 'category')
+  const publicRows = rows.filter((c) => c.access === 'public')
+  const label = (a: AuditRow['access']) =>
+    a === 'public'
+      ? t('discord.au.public', 'Alle auf dem Server')
+      : a === 'members'
+        ? t('discord.au.members', 'Nur Mitglieder')
+        : t('discord.au.private', 'Nur bestimmte Rollen')
+  return (
+    <Stack gap="sm">
+      <Text size="xs" c="dimmed">
+        {t(
+          'discord.au.hint',
+          'Vereinsserver sind für Mitglieder. Ein Kanal, den alle auf dem Server sehen, braucht eine Freigabe hier; sonst steht er als Befund in der Liste und im nächtlichen Bot-Protokoll.',
+        )}
+      </Text>
+      <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="xs">
+        <Paper withBorder p="sm">
+          <Text size="xs" c="dimmed">{t('discord.au.findings', 'Befunde')}</Text>
+          <Text fw={700} size="lg" c={data.findings.length + data.server.length ? 'red' : 'green'}>
+            {data.findings.length + data.server.length}
+          </Text>
+        </Paper>
+        <Paper withBorder p="sm">
+          <Text size="xs" c="dimmed">{t('discord.au.publicCount', 'Öffentliche Kanäle')}</Text>
+          <Text fw={700} size="lg">
+            {publicRows.length}
+            <Text span size="xs" c="dimmed" fw={400}>
+              {' '}
+              {t('discord.au.ofWhich', 'davon {{n}} freigegeben', { n: publicRows.filter((r) => r.approved).length })}
+            </Text>
+          </Text>
+        </Paper>
+        <Paper withBorder p="sm">
+          <Text size="xs" c="dimmed">{t('discord.au.memberRole', 'Mitglied-Rolle')}</Text>
+          <Text fw={700} size="lg">
+            {data.memberRole ? t('discord.au.on', 'an') : t('discord.au.off', 'aus')}
+          </Text>
+        </Paper>
+      </SimpleGrid>
+      {data.server.map((text) => (
+        <Alert key={text} color="orange" variant="light">
+          {text}
+        </Alert>
+      ))}
+      <Paper withBorder p={0}>
+        {rows.map((r, i) => (
+          <Group
+            key={r.id}
+            justify="space-between"
+            wrap="wrap"
+            gap="xs"
+            p="xs"
+            px="sm"
+            style={{ borderTop: i ? '1px solid var(--mantine-color-default-border)' : undefined }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <Group gap={6} wrap="wrap">
+                <Text size="sm" fw={500}>
+                  {KIND_ICON[r.kind] ?? '#'} {r.name}
+                </Text>
+                <Badge
+                  size="xs"
+                  variant="light"
+                  color={r.access === 'public' ? (r.approved ? 'green' : 'orange') : r.access === 'members' ? 'violet' : 'gray'}
+                >
+                  {label(r.access)}
+                </Badge>
+                {r.approved && (
+                  <Tooltip label={t('discord.au.approvedBy', 'Freigegeben von {{by}}', { by: r.approved.by })}>
+                    <Badge size="xs" variant="outline" color="green">
+                      {t('discord.au.isApproved', 'freigegeben')}
+                    </Badge>
+                  </Tooltip>
+                )}
+                {r.uses.map((u) => (
+                  <Badge key={u} size="xs" variant="light" color="blue">
+                    {u}
+                  </Badge>
+                ))}
+              </Group>
+              {r.problem && (
+                <Text size="xs" c="red">
+                  {r.problem}
+                </Text>
+              )}
+            </div>
+            <Group gap={4} wrap="nowrap">
+              {r.access === 'public' && !r.approved && (
+                <Button size="compact-xs" variant="default" loading={busy === r.id + 'approve'} onClick={() => act(r, 'approve')}>
+                  {t('discord.au.approve', 'Öffentlich lassen')}
+                </Button>
+              )}
+              {r.access === 'public' && r.approved && (
+                <Button size="compact-xs" variant="subtle" color="gray" loading={busy === r.id + 'revoke'} onClick={() => act(r, 'revoke')}>
+                  {t('discord.au.revoke', 'Freigabe zurücknehmen')}
+                </Button>
+              )}
+              {r.access === 'public' && canFix && (
+                <Button size="compact-xs" variant="light" loading={busy === r.id + 'members_only'} onClick={() => act(r, 'members_only')}>
+                  {t('discord.au.fix', 'Nur für Mitglieder')}
+                </Button>
+              )}
+              <Anchor href={r.url} target="_blank" rel="noreferrer" size="xs">
+                Discord ↗
+              </Anchor>
+            </Group>
+          </Group>
+        ))}
+      </Paper>
+      <Text size="xs" c="dimmed">
+        {t('discord.au.checked', 'Geprüft {{at}}. Der Bot prüft jede Nacht und meldet neue Befunde im Protokoll.', {
+          at: formatDateTime(data.checkedAt),
+        })}
+      </Text>
+    </Stack>
+  )
+}
+
+// ── Direktnachricht ──────────────────────────────────────────────────────────
+
+function DmCard({ connection, sources }: { connection: Connection; sources: Options['sources'] }) {
+  const { t } = useT()
+  const { notify } = useToast()
+  const [source, setSource] = useState<string | null>('members')
+  const [title, setTitle] = useState('')
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [confirm, setConfirm] = useState(false)
+  const base = `/discord/connections/${connection.id}/dm`
+  const count = useQuery({
+    queryKey: ['discord-dm-count', connection.id, source],
+    queryFn: () => apiFetch<{ count: number; max: number }>(`${base}?source=${encodeURIComponent(source ?? '')}`),
+    enabled: !!source,
+  })
+  const kindLabel: Record<string, string> = {
+    members: t('discord.dm.kindMembers', 'Alle'),
+    group: t('discord.dm.kindGroup', 'Gruppe'),
+    function: t('discord.dm.kindFunction', 'Funktion'),
+    tier: t('discord.dm.kindTier', 'Beitragskategorie'),
+    role: t('discord.dm.kindRole', 'Hubra-Rolle'),
+    type: t('discord.dm.kindType', 'Mitgliedsart'),
+  }
+  const data = sources.map((s) => ({ value: s.key, label: `${kindLabel[s.kind] ?? s.kind}: ${s.label}` }))
+  const n = count.data?.count ?? 0
+  const send = async () => {
+    setBusy(true)
+    try {
+      const result = await apiFetch<{ queued: number }>(base, {
+        method: 'POST',
+        body: JSON.stringify({ source, title, text }),
+      })
+      notify('success', t('discord.dm.sent', 'Wird an {{n}} Personen gesendet', { n: result.queued }))
+      setTitle('')
+      setText('')
+    } catch (err) {
+      notify('error', t('discord.ch.failed', 'Das ging nicht'), (err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Paper withBorder p="sm" mt="xs">
+      <Stack gap="xs">
+        <Text fw={600} size="sm">
+          {t('discord.dm.title', 'Direktnachricht an Mitglieder')}
+        </Text>
+        <Text size="xs" c="dimmed">
+          {t(
+            'discord.dm.hint',
+            'Der Bot schickt die Nachricht jedem verknüpften Mitglied der Auswahl, mit Vereinsname und deinem Namen. Wer keine Direktnachrichten vom Server annimmt, wird gezählt, nicht erneut versucht. Höchstens 300 auf einmal.',
+          )}
+        </Text>
+        <Select
+          size="xs"
+          label={t('discord.dm.to', 'An')}
+          data={data}
+          value={source}
+          searchable
+          allowDeselect={false}
+          onChange={setSource}
+          description={
+            count.data
+              ? t('discord.dm.count', '{{n}} verknüpfte Mitglieder', { n })
+              : undefined
+          }
+        />
+        <TextInput
+          size="xs"
+          label={t('discord.dm.subject', 'Titel')}
+          value={title}
+          maxLength={200}
+          onChange={(e) => setTitle(e.currentTarget.value)}
+        />
+        <Textarea
+          size="xs"
+          label={t('discord.dm.text', 'Text')}
+          autosize
+          minRows={3}
+          maxLength={1800}
+          value={text}
+          onChange={(e) => setText(e.currentTarget.value)}
+        />
+        <Group justify="flex-end">
+          <Button
+            size="xs"
+            variant="light"
+            loading={busy}
+            disabled={!source || !title.trim() || !text.trim() || n === 0}
+            onClick={() => setConfirm(true)}
+          >
+            {t('discord.dm.send', 'Senden')}
+          </Button>
+        </Group>
+      </Stack>
+      <ConfirmModal
+        open={confirm}
+        title={t('discord.dm.confirmTitle', 'Direktnachricht senden?')}
+        body={t('discord.dm.confirm', '«{{title}}» geht an {{n}} Personen auf Discord. Das lässt sich nicht zurückholen.', {
+          title,
+          n,
+        })}
+        onConfirm={() => {
+          setConfirm(false)
+          void send()
+        }}
+        onClose={() => setConfirm(false)}
+      />
+    </Paper>
   )
 }
 

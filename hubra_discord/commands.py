@@ -174,6 +174,10 @@ def handle(conn, interaction: dict) -> dict:
             return _registration(conn, member, int(raw), action == "register")
         if action == "maybe" and raw.isdigit():
             return _maybe(conn, member, int(raw))
+        if action == "gpick":  # the roles channel's "Gruppen wählen"
+            from .create import groups
+
+            return groups(member) if member is not None else reply(_link_hint())
         if action in ("gjoin", "gleave"):
             from .create import group_button
 

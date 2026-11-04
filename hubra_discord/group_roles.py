@@ -67,8 +67,12 @@ def _taken(conn) -> tuple[set[int], set[str]]:
         if kind == "group" and raw.isdigit():
             groups.add(int(raw))
         roles.add(str(m.get("role_id")))
+    from .groups import source_of
+
     for e in channel_entries(conn):
-        groups.add(int(e["group_id"]))
+        kind, _, raw = source_of(e).partition(":")
+        if kind == "group" and raw.isdigit():
+            groups.add(int(raw))
         roles.add(str(e["role_id"]))
     return groups, roles
 

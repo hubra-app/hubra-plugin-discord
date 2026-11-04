@@ -37,6 +37,7 @@ KIND_TO_TYPE = {"text": 0, "voice": 2, "category": 4}
 USE_LABELS = {
     "main": "Hauptkanal",
     "events": "Anlässe",
+    "public_events": "Öffentliche Anlässe",
     "posts": "Beiträge",
     "polls": "Umfragen",
     "reminders": "Erinnerungen",
@@ -66,10 +67,13 @@ def uses(config: dict) -> dict[str, list[str]]:
         cid: [USE_LABELS.get(u, u) for u in what]
         for cid, what in used_channels(config).items()
     }
+    from .groups import source_of
+
     for g in config.get("group_channels") or []:
         if g.get("channel_id"):
+            label = "Funktion" if source_of(g).startswith("function:") else "Gruppe"
             out.setdefault(str(g["channel_id"]), []).append(
-                f"Gruppe {g.get('name') or g.get('group_id')}"
+                f"{label} {g.get('name') or source_of(g)}"
             )
     return out
 
@@ -314,7 +318,7 @@ def delete(conn, channel_id: str, who: str = "") -> None:
             "löscht ihr auf Discord."
         )
     still = uses(config).get(cid)
-    if still and any(not u.startswith("Gruppe ") for u in still):
+    if still and any(not u.startswith(("Gruppe ", "Funktion ")) for u in still):
         raise ServerError(
             f"Hubra schreibt noch in diesen Kanal ({', '.join(still)}). Wähle "
             "zuerst einen anderen."
