@@ -39,6 +39,7 @@ TITLES = {
     "attendance": "✅ Attendance",
     "command": "⌨️ Command",
     "test": "🧪 Test",
+    "updated": "✏️ Updated",
 }
 
 

@@ -30,6 +30,10 @@ _HOOKS = "hubra_discord.hooks"
 # Hubra versions before event.changed and module processes still load the
 # plugin; they just never send the event or run the gateway.
 EVENT_CHANGED = "event.changed"
+# Newer Hubra sends these; older versions never do, and the messages then
+# catch up on the next change or at tidy_messages.
+EVENT_SIGNUPS_CHANGED = "event.signups_changed"
+POLL_CLOSED = "poll.closed"
 _EXTRA = (
     {"processes": {"discord-gateway": "hubra_discord.gateway:run"}}
     if "processes" in getattr(Module, "__dataclass_fields__", {})
@@ -94,6 +98,8 @@ module = Module(
     events={
         EVENT_PUBLISHED: f"{_HOOKS}:on_event_published",
         EVENT_CHANGED: f"{_HOOKS}:on_event_changed",
+        EVENT_SIGNUPS_CHANGED: f"{_HOOKS}:on_event_signups_changed",
+        POLL_CLOSED: f"{_HOOKS}:on_poll_closed",
         POST_PUBLISHED: f"{_HOOKS}:on_post_published",
         POLL_PUBLISHED: f"{_HOOKS}:on_poll_published",
         EVENT_REMINDER: f"{_HOOKS}:on_event_reminder",
@@ -111,6 +117,13 @@ module = Module(
             "discord-role-sync",
             "hubra_discord.tasks.sync_all_clubs",
             every=24 * 3600,
+        ),
+        # Polls that closed on their own show their result; events that
+        # are over lose their buttons (live.py).
+        Schedule(
+            "discord-tidy-messages",
+            "hubra_discord.tasks.tidy_messages",
+            every=10 * 60,
         ),
     ),
 )

@@ -15,7 +15,7 @@ from sqlalchemy import event as sa_event
 from hubra.core import apps
 from hubra.core.extensions import db
 
-from . import botlog
+from . import botlog, live
 
 from .commands import event_buttons
 from .messages import (
@@ -79,7 +79,9 @@ SWITCH_NAMES = {
 }
 
 
-def _announce(tenant_id, kind: str, toggle: str, build, what: str = "") -> None:
+def _announce(
+    tenant_id, kind: str, toggle: str, build, what: str = "", ref: str | None = None
+) -> None:
     from .app import channel_for
     from .tasks import send_announcement
 
@@ -106,10 +108,12 @@ def _announce(tenant_id, kind: str, toggle: str, build, what: str = "") -> None:
             continue
         item, components = built if isinstance(built, tuple) else (built, None)
         body = payload(config.get("mention"), [item], components)
-        after_commit(send_announcement.delay, conn.id, body, kind)
+        after_commit(send_announcement.delay, conn.id, body, kind, ref)
 
 
-def _to_groups(tenant_id, group_ids, build, what: str = "") -> None:
+def _to_groups(
+    tenant_id, group_ids, build, what: str = "", ref: str | None = None
+) -> None:
     """Post in the private channels of these groups (``channels`` scope)."""
     from .groups import channel_for_group
     from .tasks import send_to_group_channel
@@ -127,7 +131,7 @@ def _to_groups(tenant_id, group_ids, build, what: str = "") -> None:
                 continue
             item, components = build(conn)
             body = payload(None, [item], components)
-            after_commit(send_to_group_channel.delay, conn.id, int(gid), body)
+            after_commit(send_to_group_channel.delay, conn.id, int(gid), body, ref)
 
 
 def _has_group_channel(tenant_id, group_id) -> bool:
@@ -162,6 +166,7 @@ def on_event_published(tenant_id=None, event_id=None, **_):
             [event.group_id],
             lambda c: (event_embed(event), buttons_for(c)),
             f'Event "{event.title}"',
+            live.event_key(event.id),
         )
         return  # a group's event goes to its channel, not the whole server
 
@@ -170,11 +175,59 @@ def on_event_published(tenant_id=None, event_id=None, **_):
             return None
         return event_embed(event), buttons_for(conn)
 
-    _announce(tenant_id, "events", "announce_events", build, f'Event "{event.title}"')
+    _announce(
+        tenant_id,
+        "events",
+        "announce_events",
+        build,
+        f'Event "{event.title}"',
+        live.event_key(event.id),
+    )
 
 
-def on_event_changed(tenant_id=None, event_id=None, **_):
+def _refresh_later(tenant_id, event_id, deleted: bool = False) -> None:
+    """Edit the event's messages once the change is committed."""
+    from .tasks import refresh_event
+
+    key = live.event_key(event_id)
+    for conn in _live_connections(tenant_id):
+        if key in live.posted(conn):
+            after_commit(refresh_event.delay, conn.id, int(event_id), bool(deleted))
+
+
+def _live_connections(tenant_id):
+    seen, out = set(), []
+    for scope in ("announce", "channels"):
+        for conn in _connections(tenant_id, scope):
+            if conn.id not in seen:
+                seen.add(conn.id)
+                out.append(conn)
+    return out
+
+
+def on_event_changed(tenant_id=None, event_id=None, deleted=False, **_):
     _sync_events_later(tenant_id)
+    if event_id is not None:
+        _refresh_later(tenant_id, event_id, deleted)
+
+
+def on_event_signups_changed(tenant_id=None, event_id=None, **_):
+    """Places taken changed: the event's messages show the new count."""
+    if event_id is not None:
+        _refresh_later(tenant_id, event_id)
+
+
+def on_poll_closed(tenant_id=None, poll_id=None, **_):
+    """Closed early: show the result now (tidy_messages catches the polls
+    that close on their own)."""
+    from .tasks import finish_poll
+
+    if poll_id is None:
+        return
+    key = live.poll_key(poll_id)
+    for conn in _live_connections(tenant_id):
+        if key in live.posted(conn):
+            after_commit(finish_poll.delay, conn.id, int(poll_id))
 
 
 def on_post_published(tenant_id=None, post_id=None, **_):
@@ -216,6 +269,7 @@ def on_poll_published(tenant_id=None, poll_id=None, **_):
                 _poll_buttons(c, poll),
             ),
             f'Poll "{poll.question}"',
+            live.poll_key(poll.id),
         )
         return
     _announce(
@@ -227,6 +281,7 @@ def on_poll_published(tenant_id=None, poll_id=None, **_):
             _poll_buttons(c, poll),
         ),
         f'Poll "{poll.question}"',
+        live.poll_key(poll.id),
     )
 
 

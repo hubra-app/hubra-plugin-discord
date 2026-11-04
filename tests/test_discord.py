@@ -322,7 +322,7 @@ def test_public_event_is_announced_with_buttons(client, db, club_auth, tenant, q
         headers=H,
     )
     assert resp.status_code == 201, resp.get_json()
-    connection_id, body, kind = queued.call_args.args
+    connection_id, body, kind = queued.call_args.args[:3]
     assert kind == "events"
     assert connection_id == conn.id  # an id in the queue, never a token
     assert body["content"] == "@everyone"
@@ -389,7 +389,7 @@ def test_poll_for_some_groups_only_stays_off_discord(
         json={"question": "Pizza?", "options": [{"label": "Yes"}, {"label": "No"}]},
         headers=H,
     )
-    assert "• Yes" in queued.call_args.args[1]["embeds"][0]["description"]
+    assert "1️⃣ Yes" in queued.call_args.args[1]["embeds"][0]["description"]
 
 
 def test_nothing_without_the_announce_scope(client, db, club_auth, tenant, queued):
@@ -947,7 +947,7 @@ def test_event_reminder_goes_to_the_reminders_channel(
     )
     queued.assert_not_called()  # new events are switched off
     _remind(db, tenant, "on_event_reminder", event_id=resp.get_json()["id"])
-    connection_id, body, kind = queued.call_args.args
+    connection_id, body, kind = queued.call_args.args[:3]
     assert (connection_id, kind) == (conn.id, "reminders")
     assert body["embeds"][0]["title"].startswith("⏰")
     assert body["components"]  # sign-up buttons
@@ -992,11 +992,11 @@ def test_poll_closing_names_no_one(client, db, club_auth, tenant, queued):
         headers=H,
     )
     _remind(db, tenant, "on_poll_closing", poll_id=resp.get_json()["id"])
-    _, body, kind = queued.call_args.args
+    _, body, kind = queued.call_args.args[:3]
     assert kind == "reminders"
     item = body["embeds"][0]
     assert item["title"].startswith("⏳") and "Pizza?" in item["title"]
-    assert "Haven't voted" in item["description"]
+    assert "Noch nicht abgestimmt" in item["description"]
 
 
 # ── The club's look ──────────────────────────────────────────────────────────
@@ -1742,7 +1742,7 @@ def test_hubra_notices_only_when_the_club_wants_them(app, db, tenant, queued):
             {"start": "2030-11-05T21:00:00+00:00", "minutes": 30, "message": "Update"},
         )
     queued.assert_called_once()
-    conn_id, body, kind = queued.call_args.args
+    conn_id, body, kind = queued.call_args.args[:3]
     assert conn_id == off.id and kind == "hubra"
     assert body["embeds"][0]["title"] == "Hubra 1.2.3"
     assert body["allowed_mentions"] == {"parse": []}
@@ -1897,3 +1897,176 @@ def test_joining_the_platform_server_gives_platform_roles(app, db):
     ) as joined:
         assert member_joined.run("999", "42") == "platform roles"
     joined.assert_called_once_with("999", "42")
+
+
+# ── Messages kept up to date (live.py) ───────────────────────────────────────
+
+
+def _future(days: int = 10) -> str:
+    return (date.today() + timedelta(days=days)).isoformat()
+
+
+def _calls(bot, method: str) -> list:
+    return [c for c in bot.call_args_list if c.args[0] == method]
+
+
+def test_event_message_is_remembered_and_shows_places(client, db, club_auth, tenant):
+    from hubra_discord import live
+    from hubra_discord.tasks import refresh_event, send_announcement
+
+    conn = _conn(db, tenant)
+    with patch("hubra_discord.tasks.send_announcement.delay") as delay:
+        resp = client.post(
+            "/api/v1/events/",
+            json={
+                "title": "Quiz night",
+                "date": _future(),
+                "time": "19:00-22:00",
+                "type": "Social",
+                "location": "Clubhouse",
+                "max_attendees": 20,
+                "is_public": True,
+            },
+            headers=H,
+        )
+    event_id = resp.get_json()["id"]
+    args = delay.call_args.args
+    assert args[3] == f"e:{event_id}"
+    embed = args[1]["embeds"][0]
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    # A Discord timestamp: everyone sees it in their own time zone.
+    assert fields["🗓️ Wann"].startswith("<t:") and ":R>" in fields["🗓️ Wann"]
+    assert fields["📍 Wo"] == "Clubhouse"
+    assert fields["👥 Plätze"] == "0 / 20 · 20 frei"
+
+    with patch.object(api, "bot", return_value={"id": "m1"}):
+        send_announcement.run(*args)
+    db.session.refresh(conn)
+    assert live.posted(conn)[f"e:{event_id}"] == [[CHANNEL, "m1"]]
+
+    # A sign-up in the app edits the message (newer Hubra sends the event).
+    from hubra.core.modules import events as core_events
+
+    if hasattr(core_events, "EVENT_SIGNUPS_CHANGED"):
+        with patch("hubra_discord.tasks.refresh_event.delay") as refresh:
+            client.post(f"/api/v1/events/{event_id}/register", json={}, headers=H)
+        refresh.assert_called_with(conn.id, event_id, False)
+
+    with patch.object(api, "bot", return_value={}) as bot:
+        assert refresh_event.run(conn.id, event_id) == 1
+    method, path, body = bot.call_args.args
+    assert (method, path) == ("PATCH", f"/channels/{CHANNEL}/messages/m1")
+    places = {f["name"]: f["value"] for f in body["embeds"][0]["fields"]}["👥 Plätze"]
+    assert places.startswith(
+        "1 / 20" if hasattr(core_events, "EVENT_SIGNUPS_CHANGED") else "0 / 20"
+    )
+    assert body["components"][0]["components"][0]["custom_id"] == f"register:{event_id}"
+
+
+def test_deleted_event_is_marked_cancelled(client, db, club_auth, tenant):
+    from hubra_discord import live
+    from hubra_discord.tasks import refresh_event
+
+    conn = _conn(db, tenant)
+    resp = client.post(
+        "/api/v1/events/",
+        json={"title": "BBQ", "date": _future(), "type": "Social", "is_public": True},
+        headers=H,
+    )
+    event_id = resp.get_json()["id"]
+    live.remember(conn, live.event_key(event_id), CHANNEL, "m2")
+    db.session.commit()
+    with patch("hubra_discord.tasks.refresh_event.delay") as refresh:
+        client.delete(f"/api/v1/events/{event_id}", headers=H)
+    refresh.assert_called_with(conn.id, event_id, True)
+
+    old = {"embeds": [{"title": "📅 BBQ", "fields": [{"name": "👥 Plätze", "value": "3"}]}]}
+
+    def server(method, path, body=None, **_):
+        return old if method == "GET" else {}
+
+    with patch.object(api, "bot", side_effect=server) as bot:
+        assert refresh_event.run(conn.id, event_id, True) == 1
+    body = _calls(bot, "PATCH")[0].args[2]
+    assert body["embeds"][0]["title"] == "❌ Abgesagt: BBQ"
+    assert body["embeds"][0]["fields"] == []
+    assert body["components"] == []
+    db.session.refresh(conn)
+    assert live.posted(conn) == {}
+
+
+def test_message_deleted_on_discord_is_forgotten(db, tenant):
+    from hubra.core.models.event import ClubEvent
+    from hubra_discord import live
+    from hubra_discord.tasks import refresh_event
+
+    conn = _conn(db, tenant)
+    event = ClubEvent(title="Gone", date=date.today() + timedelta(days=3), type="Social")
+    db.session.add(event)
+    db.session.commit()
+    live.remember(conn, live.event_key(event.id), CHANNEL, "m3")
+    db.session.commit()
+    with patch.object(api, "bot", side_effect=DiscordError("Unknown Message", 404)):
+        assert refresh_event.run(conn.id, event.id) == 0
+    db.session.refresh(conn)
+    assert live.posted(conn) == {}
+
+
+def test_closed_poll_shows_its_result(client, db, club_auth, tenant):
+    from hubra_discord import live
+    from hubra_discord.tasks import finish_poll, tidy_messages
+
+    conn = _conn(db, tenant)
+    resp = client.post(
+        "/api/v1/polls/",
+        json={"question": "Pizza?", "options": [{"label": "Yes"}, {"label": "No"}]},
+        headers=H,
+    )
+    poll_id = resp.get_json()["id"]
+    voted = client.post(
+        f"/api/v1/polls/{poll_id}/vote", json={"option_index": 0}, headers=H
+    )
+    assert voted.status_code == 200, voted.get_json()
+    live.remember(conn, live.poll_key(poll_id), CHANNEL, "m4")
+    db.session.commit()
+
+    # Still open: nothing to do.
+    with patch("hubra_discord.tasks.finish_poll.delay") as later:
+        tidy_messages.run()
+    later.assert_not_called()
+
+    with patch("hubra_discord.tasks.finish_poll.delay") as now:
+        client.patch(f"/api/v1/polls/{poll_id}/close", headers=H)
+    from hubra.core.modules import events as core_events
+
+    if hasattr(core_events, "POLL_CLOSED"):
+        now.assert_called_with(conn.id, poll_id)
+    with patch("hubra_discord.tasks.finish_poll.delay") as later:
+        tidy_messages.run()
+    later.assert_called_with(conn.id, poll_id)
+
+    with patch.object(api, "bot", return_value={"id": "m5"}) as bot:
+        assert finish_poll.run(conn.id, poll_id) == 1
+    edit = _calls(bot, "PATCH")[0].args
+    assert edit[1] == f"/channels/{CHANNEL}/messages/m4"
+    result = edit[2]["embeds"][0]
+    assert result["title"] == "✅ Beendet: Pizza?"
+    assert "🏆 **Yes**" in result["description"]
+    assert edit[2]["components"] == []
+    notice = _calls(bot, "POST")[0].args[2]
+    assert notice["content"].startswith("🗳️ **Umfrage beendet:** Pizza?")
+    assert notice["message_reference"]["message_id"] == "m4"
+    assert notice["allowed_mentions"] == {"parse": []}
+    db.session.refresh(conn)
+    assert live.posted(conn) == {}
+
+
+def test_posted_list_stays_small(db, tenant):
+    from hubra_discord import live
+
+    conn = _conn(db, tenant)
+    for i in range(live.MAX_KEYS + 5):
+        live.remember(conn, f"e:{i}", CHANNEL, str(i))
+    known = live.posted(conn)
+    assert len(known) == live.MAX_KEYS
+    assert "e:0" not in known and f"e:{live.MAX_KEYS + 4}" in known

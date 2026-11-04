@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.6.0
+
+- **Messages stay up to date.** The bot remembers where it posted an event
+  or a poll and edits that message later: an event shows the places taken
+  ("8 / 20 · 12 frei", "ausgebucht (Warteliste)") after every sign-up or
+  cancellation, its new date or place after a change, and "❌ Abgesagt"
+  without buttons once it is deleted. Events that are over lose their
+  buttons. A poll shows its result once it closes, by hand or at its
+  closing time (counts and a bar per option, never who voted what), and the
+  channel gets a short "Umfrage beendet" reply. Places update right away
+  with Hubra that sends `event.signups_changed` and `poll.closed`; with an
+  older Hubra the messages catch up on the next change or within ten
+  minutes.
+- **Formatting.** All texts in the messages are German like the commands
+  (Wann, Wo, Plätze, Schliesst, Von). Times are Discord timestamps, so
+  everyone sees them in their own time zone with "in 3 Tagen" next to
+  them. Options are numbered, the online link and the registration
+  deadline are shown, and a footer says how to sign up or vote.
+
 ## 2.5.0
 
 - **Bot log.** Everything the bot does, and everything it leaves out, is
