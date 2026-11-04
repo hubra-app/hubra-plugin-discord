@@ -1,5 +1,68 @@
 # Changelog
 
+## 2.6.0
+
+- **Channel layout.** Kanäle › "Kanäle einrichten" makes #regeln, #ankündigungen,
+  #rollen, #anlässe, #anlässe-öffentlich, #bot and #hubra-log in one step, in a
+  new or existing category, with the right permissions (public read-only,
+  members read-only, members can write, admins only), and sets Hubra up to
+  use them. #rollen gets a "Gruppen wählen" button for open groups.
+- **Who sees what.** A new tab checks every channel: everyone on the server,
+  members only, or only some roles. A public channel needs an approval in
+  Hubra ("Öffentlich lassen", audited); "Nur für Mitglieder" fixes it. Also
+  flags @everyone with Administrator, Manage Server/Roles/Channels or
+  @everyone mentions, and group channels anyone can see. Runs every night;
+  new findings go to the bot log.
+- **Member role.** Optional "Mitglied" role for every active, linked member;
+  members-only channels let it in.
+- **Role sync** also follows Hubra roles (e.g. Kassier) and membership types
+  (honorary, passive, trial).
+- **Group and function channels.** Several channels per group, channels for
+  functions (Vorstand, ...), each in a category of your choice and movable
+  later. Polls for a function go to its channel.
+- **Public events channel.** Public events go to their own channel when one
+  is set.
+- **Direct message to members.** From Mitglieder: a short message to all
+  linked members of a group, function, tier, Hubra role or membership type
+  (at most 300, audited).
+- **Settings page in tabs.** Übersicht (main channel, what is posted,
+  live messages, the bot's rights), Ankündigungen, Kanäle, Rollen,
+  Mitglieder, Nachrichten, Aussehen & Protokoll. One save button per tab.
+- **Channels from Hubra.** The Kanäle tab lists the server's channels by
+  category and shows what Hubra uses each one for, whether it is private and
+  whether the bot can post there. Admins can create channels (private by
+  default), rename them, change the topic and move them to a category. Hubra
+  only deletes channels the bot made itself, and never one still in use.
+- **Nachrichten tab.** The events and polls the bot keeps up to date, with
+  "Jetzt aktualisieren" and "Nicht mehr aktualisieren".
+- **New commands.** /anlass and /umfrage create an event or poll from
+  Discord, /beschluss a circular resolution (Ja/Nein/Enthaltung, for a
+  function, closes itself once everyone voted), /gruppen joins or leaves
+  open groups with buttons, /hilfe lists everything. Creating needs the same
+  rights as in Hubra.
+- **"Vielleicht"** button on events, and "· N vielleicht" in the places line.
+- **Remind non-voters.** Optional: the closing reminder of a required poll
+  mentions the linked members who have not voted yet.
+- Fixed: saving the settings dropped the list of posted messages, so they
+  were no longer kept up to date.
+
+- **Messages stay up to date.** The bot remembers where it posted an event
+  or a poll and edits that message later: an event shows the places taken
+  ("8 / 20 · 12 frei", "ausgebucht (Warteliste)") after every sign-up or
+  cancellation, its new date or place after a change, and "❌ Abgesagt"
+  without buttons once it is deleted. Events that are over lose their
+  buttons. A poll shows its result once it closes, by hand or at its
+  closing time (counts and a bar per option, never who voted what), and the
+  channel gets a short "Umfrage beendet" reply. Places update right away
+  with Hubra that sends `event.signups_changed` and `poll.closed`; with an
+  older Hubra the messages catch up on the next change or within ten
+  minutes.
+- **Formatting.** All texts in the messages are German like the commands
+  (Wann, Wo, Plätze, Schliesst, Von). Times are Discord timestamps, so
+  everyone sees them in their own time zone with "in 3 Tagen" next to
+  them. Options are numbered, the online link and the registration
+  deadline are shown, and a footer says how to sign up or vote.
+
 ## 2.5.0
 
 - **Bot log.** Everything the bot does, and everything it leaves out, is

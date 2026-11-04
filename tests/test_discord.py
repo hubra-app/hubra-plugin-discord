@@ -36,6 +36,18 @@ SIGNING_KEY = Ed25519PrivateKey.generate()
 APP_ID = "1111"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_platform_key():
+    """Each test makes its own platform key. Hubra's own fixture that
+    forgets the last one may not reach plugin tests (older Hubra)."""
+    from hubra.core import crypto
+
+    forget = getattr(crypto, "forget_keys", None)
+    if forget:
+        forget()
+    yield
+
+
 @pytest.fixture
 def discord_settings(app, db):
     from hubra.core.services import platform_settings
@@ -322,7 +334,7 @@ def test_public_event_is_announced_with_buttons(client, db, club_auth, tenant, q
         headers=H,
     )
     assert resp.status_code == 201, resp.get_json()
-    connection_id, body, kind = queued.call_args.args
+    connection_id, body, kind = queued.call_args.args[:3]
     assert kind == "events"
     assert connection_id == conn.id  # an id in the queue, never a token
     assert body["content"] == "@everyone"
@@ -389,7 +401,7 @@ def test_poll_for_some_groups_only_stays_off_discord(
         json={"question": "Pizza?", "options": [{"label": "Yes"}, {"label": "No"}]},
         headers=H,
     )
-    assert "• Yes" in queued.call_args.args[1]["embeds"][0]["description"]
+    assert "1️⃣ Yes" in queued.call_args.args[1]["embeds"][0]["description"]
 
 
 def test_nothing_without_the_announce_scope(client, db, club_auth, tenant, queued):
@@ -947,7 +959,7 @@ def test_event_reminder_goes_to_the_reminders_channel(
     )
     queued.assert_not_called()  # new events are switched off
     _remind(db, tenant, "on_event_reminder", event_id=resp.get_json()["id"])
-    connection_id, body, kind = queued.call_args.args
+    connection_id, body, kind = queued.call_args.args[:3]
     assert (connection_id, kind) == (conn.id, "reminders")
     assert body["embeds"][0]["title"].startswith("⏰")
     assert body["components"]  # sign-up buttons
@@ -992,11 +1004,11 @@ def test_poll_closing_names_no_one(client, db, club_auth, tenant, queued):
         headers=H,
     )
     _remind(db, tenant, "on_poll_closing", poll_id=resp.get_json()["id"])
-    _, body, kind = queued.call_args.args
+    _, body, kind = queued.call_args.args[:3]
     assert kind == "reminders"
     item = body["embeds"][0]
     assert item["title"].startswith("⏳") and "Pizza?" in item["title"]
-    assert "Haven't voted" in item["description"]
+    assert "Noch nicht abgestimmt" in item["description"]
 
 
 # ── The club's look ──────────────────────────────────────────────────────────
@@ -1116,10 +1128,12 @@ def test_nightly_run_refreshes_the_profile(app, db, tenant):
         patch("hubra_discord.tasks.sync_connection.delay"),
         patch("hubra_discord.tasks.sync_events.delay") as events,
         patch("hubra_discord.tasks.apply_profile.delay") as profile,
+        patch("hubra_discord.tasks.audit_connection.delay") as audit,
     ):
         sync_all_clubs.run()
     profile.assert_called_once_with(conn.id)
     events.assert_called_once_with(conn.id)
+    audit.assert_called_once_with(conn.id)
 
 
 # ── Direct messages (notifications) ──────────────────────────────────────────
@@ -1742,7 +1756,7 @@ def test_hubra_notices_only_when_the_club_wants_them(app, db, tenant, queued):
             {"start": "2030-11-05T21:00:00+00:00", "minutes": 30, "message": "Update"},
         )
     queued.assert_called_once()
-    conn_id, body, kind = queued.call_args.args
+    conn_id, body, kind = queued.call_args.args[:3]
     assert conn_id == off.id and kind == "hubra"
     assert body["embeds"][0]["title"] == "Hubra 1.2.3"
     assert body["allowed_mentions"] == {"parse": []}
@@ -1897,3 +1911,957 @@ def test_joining_the_platform_server_gives_platform_roles(app, db):
     ) as joined:
         assert member_joined.run("999", "42") == "platform roles"
     joined.assert_called_once_with("999", "42")
+
+
+# ── Messages kept up to date (live.py) ───────────────────────────────────────
+
+
+def _future(days: int = 10) -> str:
+    return (date.today() + timedelta(days=days)).isoformat()
+
+
+def _calls(bot, method: str) -> list:
+    return [c for c in bot.call_args_list if c.args[0] == method]
+
+
+def test_event_message_is_remembered_and_shows_places(client, db, club_auth, tenant):
+    from hubra_discord import live
+    from hubra_discord.tasks import refresh_event, send_announcement
+
+    conn = _conn(db, tenant)
+    with patch("hubra_discord.tasks.send_announcement.delay") as delay:
+        resp = client.post(
+            "/api/v1/events/",
+            json={
+                "title": "Quiz night",
+                "date": _future(),
+                "time": "19:00-22:00",
+                "type": "Social",
+                "location": "Clubhouse",
+                "max_attendees": 20,
+                "is_public": True,
+            },
+            headers=H,
+        )
+    event_id = resp.get_json()["id"]
+    args = delay.call_args.args
+    assert args[3] == f"e:{event_id}"
+    embed = args[1]["embeds"][0]
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    # A Discord timestamp: everyone sees it in their own time zone.
+    assert fields["🗓️ Wann"].startswith("<t:") and ":R>" in fields["🗓️ Wann"]
+    assert fields["📍 Wo"] == "Clubhouse"
+    assert fields["👥 Plätze"] == "0 / 20 · 20 frei"
+
+    with patch.object(api, "bot", return_value={"id": "m1"}):
+        send_announcement.run(*args)
+    db.session.refresh(conn)
+    assert live.posted(conn)[f"e:{event_id}"] == [[CHANNEL, "m1"]]
+
+    # A sign-up in the app edits the message (newer Hubra sends the event).
+    from hubra.core.modules import events as core_events
+
+    if hasattr(core_events, "EVENT_SIGNUPS_CHANGED"):
+        with patch("hubra_discord.tasks.refresh_event.delay") as refresh:
+            client.post(f"/api/v1/events/{event_id}/register", json={}, headers=H)
+        refresh.assert_called_with(conn.id, event_id, False)
+
+    with patch.object(api, "bot", return_value={}) as bot:
+        assert refresh_event.run(conn.id, event_id) == 1
+    method, path, body = bot.call_args.args
+    assert (method, path) == ("PATCH", f"/channels/{CHANNEL}/messages/m1")
+    places = {f["name"]: f["value"] for f in body["embeds"][0]["fields"]}["👥 Plätze"]
+    assert places.startswith(
+        "1 / 20" if hasattr(core_events, "EVENT_SIGNUPS_CHANGED") else "0 / 20"
+    )
+    assert body["components"][0]["components"][0]["custom_id"] == f"register:{event_id}"
+
+
+def test_deleted_event_is_marked_cancelled(client, db, club_auth, tenant):
+    from hubra_discord import live
+    from hubra_discord.tasks import refresh_event
+
+    conn = _conn(db, tenant)
+    resp = client.post(
+        "/api/v1/events/",
+        json={"title": "BBQ", "date": _future(), "type": "Social", "is_public": True},
+        headers=H,
+    )
+    event_id = resp.get_json()["id"]
+    live.remember(conn, live.event_key(event_id), CHANNEL, "m2")
+    db.session.commit()
+    with patch("hubra_discord.tasks.refresh_event.delay") as refresh:
+        client.delete(f"/api/v1/events/{event_id}", headers=H)
+    refresh.assert_called_with(conn.id, event_id, True)
+
+    old = {
+        "embeds": [{"title": "📅 BBQ", "fields": [{"name": "👥 Plätze", "value": "3"}]}]
+    }
+
+    def server(method, path, body=None, **_):
+        return old if method == "GET" else {}
+
+    with patch.object(api, "bot", side_effect=server) as bot:
+        assert refresh_event.run(conn.id, event_id, True) == 1
+    body = _calls(bot, "PATCH")[0].args[2]
+    assert body["embeds"][0]["title"] == "❌ Abgesagt: BBQ"
+    assert body["embeds"][0]["fields"] == []
+    assert body["components"] == []
+    db.session.refresh(conn)
+    assert live.posted(conn) == {}
+
+
+def test_message_deleted_on_discord_is_forgotten(db, tenant):
+    from hubra.core.models.event import ClubEvent
+    from hubra_discord import live
+    from hubra_discord.tasks import refresh_event
+
+    conn = _conn(db, tenant)
+    event = ClubEvent(
+        title="Gone", date=date.today() + timedelta(days=3), type="Social"
+    )
+    db.session.add(event)
+    db.session.commit()
+    live.remember(conn, live.event_key(event.id), CHANNEL, "m3")
+    db.session.commit()
+    with patch.object(api, "bot", side_effect=DiscordError("Unknown Message", 404)):
+        assert refresh_event.run(conn.id, event.id) == 0
+    db.session.refresh(conn)
+    assert live.posted(conn) == {}
+
+
+def test_closed_poll_shows_its_result(client, db, club_auth, tenant):
+    from hubra_discord import live
+    from hubra_discord.tasks import finish_poll, tidy_messages
+
+    conn = _conn(db, tenant)
+    resp = client.post(
+        "/api/v1/polls/",
+        json={"question": "Pizza?", "options": [{"label": "Yes"}, {"label": "No"}]},
+        headers=H,
+    )
+    poll_id = resp.get_json()["id"]
+    voted = client.post(
+        f"/api/v1/polls/{poll_id}/vote", json={"option_index": 0}, headers=H
+    )
+    assert voted.status_code == 200, voted.get_json()
+    live.remember(conn, live.poll_key(poll_id), CHANNEL, "m4")
+    db.session.commit()
+
+    # Still open: nothing to do.
+    with patch("hubra_discord.tasks.finish_poll.delay") as later:
+        tidy_messages.run()
+    later.assert_not_called()
+
+    with patch("hubra_discord.tasks.finish_poll.delay") as now:
+        client.patch(f"/api/v1/polls/{poll_id}/close", headers=H)
+    from hubra.core.modules import events as core_events
+
+    if hasattr(core_events, "POLL_CLOSED"):
+        now.assert_called_with(conn.id, poll_id)
+    with patch("hubra_discord.tasks.finish_poll.delay") as later:
+        tidy_messages.run()
+    later.assert_called_with(conn.id, poll_id)
+
+    with patch.object(api, "bot", return_value={"id": "m5"}) as bot:
+        assert finish_poll.run(conn.id, poll_id) == 1
+    edit = _calls(bot, "PATCH")[0].args
+    assert edit[1] == f"/channels/{CHANNEL}/messages/m4"
+    result = edit[2]["embeds"][0]
+    assert result["title"] == "✅ Beendet: Pizza?"
+    assert "🏆 **Yes**" in result["description"]
+    assert edit[2]["components"] == []
+    notice = _calls(bot, "POST")[0].args[2]
+    assert notice["content"].startswith("🗳️ **Umfrage beendet:** Pizza?")
+    assert notice["message_reference"]["message_id"] == "m4"
+    assert notice["allowed_mentions"] == {"parse": []}
+    db.session.refresh(conn)
+    assert live.posted(conn) == {}
+
+
+def test_posted_list_stays_small(db, tenant):
+    from hubra_discord import live
+
+    conn = _conn(db, tenant)
+    for i in range(live.MAX_KEYS + 5):
+        live.remember(conn, f"e:{i}", CHANNEL, str(i))
+    known = live.posted(conn)
+    assert len(known) == live.MAX_KEYS
+    assert "e:0" not in known and f"e:{live.MAX_KEYS + 4}" in known
+
+
+# ── Doing club work from Discord (create.py) ─────────────────────────────────
+
+
+def _with(name, user="42", **options):
+    cmd = _command(name, user=user)
+    cmd["data"]["options"] = [{"name": k, "value": v} for k, v in options.items()]
+    return cmd
+
+
+def test_dates_and_times_as_people_type_them():
+    from hubra_discord.create import parse_closing, parse_date, parse_time
+
+    today = date(2026, 12, 20)
+    assert parse_date("heute", today) == today
+    assert parse_date("morgen", today) == date(2026, 12, 21)
+    assert parse_date("24.12.2026", today) == date(2026, 12, 24)
+    assert parse_date("3.1.", today) == date(2027, 1, 3)  # next one
+    assert parse_date("31.02.2026", today) is None
+    assert parse_time("19.00") == "19:00"
+    assert parse_time("9:30 - 11:00") == "09:30-11:00"
+    assert parse_time("") == "" and parse_time("abends") is None
+    assert parse_closing("") is None and parse_closing("bald") is False
+    assert parse_closing("24.12.2030 18:00").hour == 18
+
+
+def test_new_event_from_discord(client, db, tenant, trainer, queued):
+    from hubra.core.models.event import ClubEvent
+
+    _conn(db, tenant)
+    day = (date.today() + timedelta(days=5)).strftime("%d.%m.%Y")
+    text = _signed(
+        client,
+        _with(
+            "anlass",
+            titel="Grillabend",
+            datum=day,
+            zeit="18:00-22:00",
+            ort="Clubhaus",
+            oeffentlich=True,
+        ),
+    ).get_json()["data"]["content"]
+    assert "Grillabend" in text and "erstellt" in text
+    event = db.session.query(ClubEvent).filter_by(title="Grillabend").one()
+    assert (
+        event.time == "18:00-22:00" and event.is_public and event.location == "Clubhaus"
+    )
+    assert queued.called  # announced like one made in the app
+
+
+def test_new_event_needs_a_linked_member_and_a_readable_date(
+    client, db, tenant, trainer
+):
+    _conn(db, tenant)
+    text = _signed(
+        client, _with("anlass", user="999", titel="X", datum="morgen")
+    ).get_json()
+    assert "Verknüpfe" in text["data"]["content"]
+    text = _signed(client, _with("anlass", titel="X", datum="irgendwann")).get_json()
+    assert "Datum verstehe ich nicht" in text["data"]["content"]
+
+
+def test_new_poll_from_discord(client, db, tenant, trainer):
+    from hubra.core.models.poll import Poll
+
+    _conn(db, tenant)
+    text = _signed(
+        client,
+        _with("umfrage", frage="Pizza oder Pasta?", optionen="Pizza; Pasta; Egal"),
+    ).get_json()["data"]["content"]
+    assert "gestartet" in text
+    poll = db.session.query(Poll).filter_by(question="Pizza oder Pasta?").one()
+    assert [o.label for o in poll.options] == ["Pizza", "Pasta", "Egal"]
+    text = _signed(client, _with("umfrage", frage="?", optionen="nur eine")).get_json()
+    assert "mindestens zwei" in text["data"]["content"]
+
+
+def test_circular_resolution_for_a_function(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.function import Function, FunctionHolder
+    from hubra.core.models.poll import Poll
+
+    _conn(db, tenant)
+    board = Function(name="Vorstand")
+    db.session.add(board)
+    db.session.flush()
+    db.session.add(
+        FunctionHolder(function_id=board.id, member_id=seeded_db["admin"].id)
+    )
+    db.session.commit()
+
+    typing = {
+        "type": 4,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {
+            "name": "beschluss",
+            "options": [{"name": "funktion", "value": "vor", "focused": True}],
+        },
+    }
+    choices = _signed(client, typing).get_json()["data"]["choices"]
+    assert choices == [{"name": "Vorstand", "value": str(board.id)}]
+
+    text = _signed(
+        client, _with("beschluss", frage="Neue Tore kaufen?", funktion=str(board.id))
+    ).get_json()["data"]["content"]
+    assert "gestartet" in text
+    poll = db.session.query(Poll).filter_by(question="Neue Tore kaufen?").one()
+    assert [o.label for o in poll.options] == ["Ja", "Nein", "Enthaltung"]
+    assert poll.is_required and poll.required_function_ids == [board.id]
+    if hasattr(poll, "auto_close"):
+        assert poll.auto_close is True
+
+
+def test_groups_command_joins_and_leaves(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.group import Group
+
+    _conn(db, tenant)
+    choir = Group(name="Chor", visibility="open")
+    db.session.add(choir)
+    db.session.commit()
+    answer = _signed(client, _command("gruppen")).get_json()
+    assert "Chor" in answer["data"]["content"]
+    button = answer["data"]["components"][0]["components"][0]
+    assert button["custom_id"] == f"gjoin:{choir.id}"
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"gjoin:{choir.id}"},
+    }
+    answer = _signed(client, click).get_json()
+    assert answer["type"] == 7 and "jetzt in **Chor**" in answer["data"]["content"]
+    assert seeded_db["admin"] in db.session.get(Group, choir.id).members
+
+
+def test_help_lists_what_the_person_may_do(client, db, tenant, trainer):
+    _conn(db, tenant)
+    text = _signed(client, _command("hilfe")).get_json()["data"]["content"]
+    assert "/anlass" in text and "/gruppen" in text
+    stranger = _signed(client, _command("hilfe", user="999")).get_json()["data"][
+        "content"
+    ]
+    assert "/anlass" not in stranger and "Verknüpfe" in stranger
+
+
+def test_maybe_button(client, db, tenant, trainer, seeded_db):
+    from hubra.api.events.services import EventService
+    from hubra.core.models.event import ClubEvent, EventRegistration
+    from hubra_discord.commands import event_buttons
+
+    if not hasattr(EventService, "maybe"):
+        pytest.skip("Hubra without 'Vielleicht'")
+    _conn(db, tenant)
+    event = ClubEvent(
+        title="Quiz",
+        date=date.today() + timedelta(days=2),
+        type="Social",
+        is_public=True,
+    )
+    db.session.add(event)
+    db.session.commit()
+    labels = [b["label"] for b in event_buttons(event)[0]["components"]]
+    assert labels == ["Anmelden", "Vielleicht", "Abmelden"]
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"maybe:{event.id}"},
+    }
+    assert "Vielleicht" in _signed(client, click).get_json()["data"]["content"]
+    reg = db.session.query(EventRegistration).filter_by(event_id=event.id).one()
+    assert reg.status == "maybe"
+
+
+# ── Mentioning those who still have to vote (nudge.py) ───────────────────────
+
+
+def test_closing_post_mentions_linked_non_voters(app, db, tenant, trainer, seeded_db):
+    from hubra.core.models.poll import Poll, PollOption
+    from hubra.core.tenant.context import in_club
+    from hubra_discord.nudge import add_mentions
+
+    conn = _conn(db, tenant, nudge_voters=True)
+    with in_club(tenant):
+        poll = Poll(
+            question="Trikots?", is_required=True, required_group_ids=[trainer.id]
+        )
+        poll.options = [PollOption(label="Ja"), PollOption(label="Nein")]
+        db.session.add(poll)
+        db.session.commit()
+        body = add_mentions(
+            conn, poll, {"embeds": [], "allowed_mentions": {"parse": []}}
+        )
+    assert body["content"] == "🗳️ Noch nicht abgestimmt: <@42>"
+    assert body["allowed_mentions"] == {"parse": [], "users": ["42"]}
+
+    conn.config = {**conn.config, "nudge_voters": False}
+    with in_club(tenant):
+        assert "content" not in add_mentions(conn, poll, {"embeds": []})
+
+
+# ── The server from Hubra (server.py, routes) ────────────────────────────────
+
+
+class ChannelServer:
+    """A small Discord server: two categories, channels, one made by Hubra."""
+
+    def __init__(self):
+        self.calls = []
+        self.channels = [
+            {"id": "800", "name": "Info", "type": 4, "position": 0},
+            {
+                "id": CHANNEL,
+                "name": "news",
+                "type": 0,
+                "parent_id": "800",
+                "position": 0,
+            },
+            {"id": "903", "name": "Teams", "type": 4, "position": 1},
+            {
+                "id": "904",
+                "name": "u17",
+                "type": 0,
+                "parent_id": "903",
+                "position": 0,
+                "permission_overwrites": [
+                    {"id": GUILD, "type": 0, "deny": str(1 << 10), "allow": "0"}
+                ],
+            },
+            {
+                "id": "905",
+                "name": "Garderobe",
+                "type": 2,
+                "parent_id": "903",
+                "position": 1,
+            },
+        ]
+
+    def __call__(self, method, path, body=None, **kw):
+        self.calls.append((method, path, body))
+        if path == f"/guilds/{GUILD}/channels" and method == "GET":
+            return self.channels
+        if path == f"/guilds/{GUILD}/channels" and method == "POST":
+            made = {"id": "999", "name": body["name"], "type": body["type"]}
+            self.channels.append(made)
+            return made
+        if path.endswith("/roles"):
+            return [
+                {"id": GUILD, "permissions": str((1 << 10) | (1 << 11) | (1 << 14))},
+                {"id": "950", "permissions": str(1 << 4), "managed": True},
+            ]
+        if path.endswith(f"/members/{APP_ID}"):
+            return {"roles": ["950"]}
+        if path.startswith("/channels/") and method == "GET":
+            cid = path.split("/")[2]
+            found = next((c for c in self.channels if c["id"] == cid), None)
+            return {**found, "guild_id": GUILD} if found else None
+        if path.startswith("/channels/") and method in ("PATCH", "DELETE"):
+            return {"id": path.split("/")[2], **(body or {})}
+        raise AssertionError((method, path))
+
+
+def test_channels_overview(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("announce", "channels"), made_channels=["904"])
+    with patch.object(api, "bot", side_effect=ChannelServer()):
+        data = client.get(
+            f"/api/v1/discord/connections/{conn.id}/channels", headers=H
+        ).get_json()
+    names = [c["name"] for c in data["channels"]]
+    # Discord's order: category, then its text channels, then voice.
+    assert names == ["Info", "news", "Teams", "u17", "Garderobe"]
+    by = {c["name"]: c for c in data["channels"]}
+    assert by["news"]["uses"] == ["Hauptkanal"] and by["news"]["botCanPost"]
+    assert (
+        by["u17"]["private"] and by["u17"]["madeByHubra"] and not by["u17"]["botCanSee"]
+    )
+    assert data["canManage"] is True
+
+
+def test_make_rename_and_delete_a_channel(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    server = ChannelServer()
+    base = f"/api/v1/discord/connections/{conn.id}/channels"
+    with patch.object(api, "bot", side_effect=server):
+        resp = client.post(
+            base,
+            json={"name": "Vorstand Intern", "parentId": "903", "private": True},
+            headers=H,
+        )
+        assert resp.status_code == 201, resp.get_json()
+        assert resp.get_json()["name"] == "vorstand-intern"
+        made = [c for c in server.calls if c[0] == "POST"][0][2]
+        assert made["parent_id"] == "903"
+        assert made["permission_overwrites"][0] == {
+            "id": GUILD,
+            "type": 0,
+            "deny": str(1 << 10),
+            "allow": "0",
+        }
+        assert (
+            client.patch(
+                f"{base}/999", json={"name": "Vorstand"}, headers=H
+            ).status_code
+            == 200
+        )
+        assert client.delete(f"{base}/999", headers=H).status_code == 200
+        # People's own channels and the ones Hubra posts in stay.
+        resp = client.delete(f"{base}/905", headers=H)
+        assert (
+            resp.status_code == 409 and "selbst angelegt" in resp.get_json()["message"]
+        )
+    db.session.refresh(conn)
+    assert "999" not in conn.config.get("made_channels", [])
+
+
+def test_channel_changes_need_the_channels_scope(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("announce",))
+    with patch.object(api, "bot", side_effect=ChannelServer()):
+        resp = client.post(
+            f"/api/v1/discord/connections/{conn.id}/channels",
+            json={"name": "x"},
+            headers=H,
+        )
+    assert resp.status_code == 409 and "Kanäle" in resp.get_json()["message"]
+
+
+def test_saving_settings_keeps_what_the_bot_remembers(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, posted={"e:1": [[CHANNEL, "5"]]}, made_channels=["904"])
+    with patch.object(api, "bot", side_effect=_server):
+        resp = client.patch(
+            f"/api/v1/apps/connections/{conn.id}",
+            json={"config": {"announce_posts": False}},
+            headers=H,
+        )
+    assert resp.status_code == 200
+    db.session.refresh(conn)
+    assert conn.config["posted"] == {"e:1": [[CHANNEL, "5"]]}
+    assert conn.config["made_channels"] == ["904"]
+
+
+def test_posted_messages_list(client, db, club_auth, tenant):
+    from hubra.core.models.event import ClubEvent
+
+    event = ClubEvent(
+        title="Turnier", date=date.today() + timedelta(days=9), type="Social"
+    )
+    db.session.add(event)
+    db.session.commit()
+    conn = _conn(
+        db,
+        tenant,
+        posted={f"e:{event.id}": [[CHANNEL, "77"]], "p:9999": [[CHANNEL, "78"]]},
+    )
+    data = client.get(
+        f"/api/v1/discord/connections/{conn.id}/messages", headers=H
+    ).get_json()
+    first, second = data["messages"]
+    assert first["title"] == "(gelöschte Umfrage)" and not first["exists"]
+    assert second["title"] == "Turnier"
+    assert (
+        second["messages"][0]["url"]
+        == f"https://discord.com/channels/{GUILD}/{CHANNEL}/77"
+    )
+    resp = client.delete(
+        f"/api/v1/discord/connections/{conn.id}/messages/p:9999", headers=H
+    )
+    assert resp.status_code == 200
+    db.session.refresh(conn)
+    assert "p:9999" not in conn.config["posted"]
+
+
+def test_server_api_needs_the_right(client, db, tenant):
+    conn = _conn(db, tenant)
+    assert client.get(
+        f"/api/v1/discord/connections/{conn.id}/channels", headers=H
+    ).status_code in (401, 403)
+
+
+# ── Channel layout, permission audit, member role, DMs, group channels ──────
+
+
+class LayoutServer(ChannelServer):
+    """ChannelServer that also makes roles and takes permission overwrites."""
+
+    def __init__(self, everyone_bits=(1 << 10) | (1 << 11) | (1 << 14)):
+        super().__init__()
+        self.everyone_bits = everyone_bits
+        self.roles = [
+            {"id": GUILD, "name": "@everyone", "permissions": str(everyone_bits)},
+            {"id": "950", "name": "Hubra", "permissions": str(1 << 4), "managed": True},
+        ]
+        self.next_id = 2000
+
+    def _id(self):
+        self.next_id += 1
+        return str(self.next_id)
+
+    def __call__(self, method, path, body=None, **kw):
+        if path == f"/guilds/{GUILD}/channels" and method == "POST":
+            self.calls.append((method, path, body))
+            made = {"id": self._id(), "guild_id": GUILD, **body}
+            self.channels.append(made)
+            return made
+        if path == f"/guilds/{GUILD}/roles" and method == "GET":
+            self.calls.append((method, path, body))
+            return self.roles
+        if path == f"/guilds/{GUILD}/roles" and method == "POST":
+            self.calls.append((method, path, body))
+            role = {"id": self._id(), "name": body["name"], "permissions": "0"}
+            self.roles.append(role)
+            return role
+        if "/permissions/" in path and method == "PUT":
+            self.calls.append((method, path, body))
+            cid, oid = path.split("/")[2], path.split("/")[4]
+            channel = next(c for c in self.channels if c["id"] == cid)
+            kept = [
+                o for o in channel.get("permission_overwrites") or [] if o["id"] != oid
+            ]
+            channel["permission_overwrites"] = [*kept, {"id": oid, **body}]
+            return None
+        if path.endswith("/messages") and method == "POST":
+            self.calls.append((method, path, body))
+            return {"id": "m1"}
+        return super().__call__(method, path, body, **kw)
+
+
+def test_layout_makes_channels_with_the_right_permissions(
+    client, db, club_auth, tenant, discord_settings
+):
+    conn = _conn(
+        db, tenant, scopes=("announce", "channels", "commands"), channel_id=None
+    )
+    server = LayoutServer()
+    base = f"/api/v1/discord/connections/{conn.id}/layout"
+    with patch.object(api, "bot", side_effect=server):
+        resp = client.post(
+            base,
+            json={
+                "slots": ["rules", "announcements", "roles", "events", "public_events"],
+                "categoryName": "Verein",
+            },
+            headers=H,
+        )
+        assert resp.status_code == 201, resp.get_json()
+        made = {m["slot"]: m for m in resp.get_json()["made"]}
+        assert set(made) == {
+            "category",
+            "rules",
+            "announcements",
+            "roles",
+            "events",
+            "public_events",
+        }
+        state = client.get(base, headers=H).get_json()
+    db.session.refresh(conn)
+    config = conn.config
+    role = config["auto_member_role"]["role_id"]
+    assert config["member_role"] is True
+    by_id = {c["id"]: c for c in server.channels}
+    # Everyone reads the rules; nobody but the bot writes there.
+    rules = by_id[made["rules"]["id"]]
+    everyone = next(o for o in rules["permission_overwrites"] if o["id"] == GUILD)
+    assert int(everyone["allow"]) & api.VIEW_CHANNEL
+    assert int(everyone["deny"]) & api.SEND_MESSAGES
+    # Events are for members: @everyone can't see them, the member role can.
+    events = by_id[made["events"]["id"]]
+    overwrites = {o["id"]: o for o in events["permission_overwrites"]}
+    assert int(overwrites[GUILD]["deny"]) & api.VIEW_CHANNEL
+    assert int(overwrites[role]["allow"]) & api.VIEW_CHANNEL
+    assert all(c.get("parent_id") == made["category"]["id"] for c in (rules, events))
+    # Wired up in Hubra, public ones approved.
+    assert config["channel_id"] == made["announcements"]["id"]
+    assert config["channels"]["events"] == made["events"]["id"]
+    assert config["channels"]["public_events"] == made["public_events"]["id"]
+    assert config["members_only_events"] is True
+    assert {a["id"] for a in config["public_ok"]} == {
+        made["rules"]["id"],
+        made["public_events"]["id"],
+    }
+    # The roles channel got its "Gruppen wählen" button.
+    panel = [b for m, p, b in server.calls if p.endswith("/messages")][0]
+    assert panel["components"][0]["components"][0]["custom_id"] == "gpick"
+    assert {s["key"]: s["channelId"] for s in state["slots"]}["rules"] == made["rules"][
+        "id"
+    ]
+    # Again: nothing new.
+    with patch.object(api, "bot", side_effect=server):
+        again = client.post(base, json={"slots": ["rules"]}, headers=H).get_json()
+    assert again["made"] == [] and again["kept"] == ["rules"]
+
+
+def test_audit_flags_public_channels_until_approved_or_fixed(
+    client, db, club_auth, tenant, discord_settings
+):
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    server = LayoutServer(everyone_bits=(1 << 10) | (1 << 17))
+    base = f"/api/v1/discord/connections/{conn.id}/audit"
+    with patch.object(api, "bot", side_effect=server):
+        result = client.get(base, headers=H).get_json()
+        rows = {c["id"]: c for c in result["channels"]}
+        assert rows[CHANNEL]["access"] == "public"
+        assert rows["904"]["access"] == "private"
+        assert {f["channelId"] for f in result["findings"]} == {CHANNEL, "905"}
+        assert any("@everyone erwähnen" in t for t in result["server"])
+        # Approve one: no longer a finding.
+        result = client.post(
+            f"{base}/{CHANNEL}", json={"action": "approve"}, headers=H
+        ).get_json()
+        assert {f["channelId"] for f in result["findings"]} == {"905"}
+        assert {c["id"]: c for c in result["channels"]}[CHANNEL]["approved"]
+        # Fix the other: members only, with the member role made for it.
+        result = client.post(
+            f"{base}/905", json={"action": "members_only"}, headers=H
+        ).get_json()
+        assert result["findings"] == []
+        assert {c["id"]: c for c in result["channels"]}["905"]["access"] == "members"
+    db.session.refresh(conn)
+    assert conn.config["member_role"] is True
+    from hubra.core.models.audit import AuditEntry
+
+    actions = {a.action for a in db.session.query(AuditEntry).all()}
+    assert {
+        "discord.channel_public_approved",
+        "discord.channel_members_only",
+    } <= actions
+
+
+def test_nightly_audit_reports_a_finding_once(app, db, tenant, discord_settings):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.audit import nightly
+
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    server = LayoutServer()
+    with in_club(tenant), patch.object(api, "bot", side_effect=server):
+        assert nightly(conn) == 2  # #news and the voice channel
+        assert nightly(conn) == 0
+
+
+def test_group_and_function_channels_in_a_category(
+    client, db, club_auth, tenant, discord_settings
+):
+    from hubra.core.models.function import Function
+    from hubra.core.models.group import Group
+
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    u17 = Group(name="U17", visibility="open")
+    board = Function(name="Vorstand")
+    db.session.add_all([u17, board])
+    db.session.commit()
+    server = LayoutServer()
+    url = f"/api/v1/apps/connections/{conn.id}"
+    wanted = [
+        {"source": f"group:{u17.id}", "categoryId": "903"},
+        {"source": f"group:{u17.id}", "name": "u17-eltern", "categoryId": "903"},
+        {"source": f"function:{board.id}"},
+    ]
+    with (
+        patch.object(api, "bot", side_effect=server),
+        patch("hubra_discord.tasks.sync_connection.delay"),
+    ):
+        resp = client.patch(url, json={"config": {"group_channels": wanted}}, headers=H)
+        assert resp.status_code == 200, resp.get_json()
+    db.session.refresh(conn)
+    entries = conn.config["group_channels"]
+    assert [e["channel_name"] for e in entries] == ["u17", "u17-eltern", "vorstand"]
+    # One role per group, shared by its channels.
+    assert entries[0]["role_id"] == entries[1]["role_id"] != entries[2]["role_id"]
+    assert entries[0]["category_id"] == "903" and entries[2]["category_id"] is None
+    made = [b for m, p, b in server.calls if m == "POST" and p.endswith("/channels")]
+    assert made[0]["parent_id"] == "903" and "parent_id" not in made[2]
+    # Move the board's channel into a category; keep the others.
+    keep = [{"source": e["source"], "channelId": e["channel_id"]} for e in entries]
+    keep[0]["categoryId"] = keep[1]["categoryId"] = "903"
+    keep[2]["categoryId"] = "800"
+    with (
+        patch.object(api, "bot", side_effect=server),
+        patch("hubra_discord.tasks.sync_connection.delay"),
+    ):
+        resp = client.patch(url, json={"config": {"group_channels": keep}}, headers=H)
+        assert resp.status_code == 200, resp.get_json()
+    moved = [b for m, p, b in server.calls if m == "PATCH"]
+    assert moved == [{"parent_id": "800"}]
+    db.session.refresh(conn)
+    assert len(conn.config["group_channels"]) == 3
+
+
+def test_function_polls_go_to_the_function_channel(app, db, tenant):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.hooks import _to_groups
+
+    conn = _conn(
+        db,
+        tenant,
+        scopes=("announce", "channels"),
+        group_channels=[
+            {
+                "source": "function:7",
+                "function_id": 7,
+                "channel_id": "777",
+                "role_id": "70",
+                "name": "Vorstand",
+            }
+        ],
+    )
+    with (
+        in_club(tenant),
+        patch("hubra_discord.hooks.after_commit") as later,
+    ):
+        _to_groups(
+            tenant.id,
+            [],
+            lambda c: ({"title": "Beschluss"}, None),
+            "Poll",
+            function_ids=[7],
+        )
+    args = later.call_args.args
+    assert args[1] == conn.id and args[-1] == "function:7"
+
+
+def test_public_events_go_to_the_public_channel(app, db, tenant):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.hooks import _announce
+
+    _conn(
+        db,
+        tenant,
+        scopes=("announce",),
+        channels={"events": "801", "public_events": "802"},
+    )
+    with in_club(tenant), patch("hubra_discord.hooks.after_commit") as later:
+        _announce(
+            tenant.id,
+            "events",
+            "announce_events",
+            lambda c: {"title": "x"},
+            public=True,
+        )
+        _announce(tenant.id, "events", "announce_events", lambda c: {"title": "y"})
+    kinds = [c.args[3] for c in later.call_args_list]
+    assert kinds == ["public_events", "events"]
+
+
+def test_role_sync_follows_hubra_roles_and_membership_types(app, db, tenant, seeded_db):
+    from hubra.core.models.role import Role
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.roles import matches, sources
+
+    with in_club(tenant):
+        admin = seeded_db["admin"]
+        admin.status = "active"
+        admin.membership_type = "honorary"
+        role = Role(name="Kassier")
+        db.session.add(role)
+        admin.roles.append(role)
+        db.session.commit()
+        keys = {s["key"] for s in sources()}
+        assert f"role:{role.id}" in keys and "type:honorary" in keys
+        assert matches(f"role:{role.id}", admin)
+        assert matches("type:honorary", admin)
+        assert not matches("type:passive", admin)
+
+
+def test_member_role_is_made_and_given(app, db, tenant, trainer, discord_settings):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import roles
+
+    conn = _conn(db, tenant, scopes=("announce", "roles"), member_role=True)
+    server = LayoutServer()
+    given = []
+    with (
+        in_club(tenant),
+        patch.object(api, "bot", side_effect=server),
+        patch.object(api, "member", return_value={"roles": []}),
+        patch.object(api, "add_role", side_effect=lambda g, u, r, why: given.append(r)),
+    ):
+        roles.sync_all(conn)
+    role = conn.config["auto_member_role"]["role_id"]
+    assert given == [role]
+    assert any(r["name"] == "Mitglied" for r in server.roles)
+
+
+def test_dm_to_a_group(client, db, club_auth, tenant, trainer, discord_settings):
+    conn = _conn(db, tenant, scopes=("announce", "notify"))
+    base = f"/api/v1/discord/connections/{conn.id}/dm"
+    source = f"group:{trainer.id}"
+    assert client.get(f"{base}?source={source}", headers=H).get_json()["count"] == 1
+    with patch("hubra_discord.tasks.send_dm_broadcast.delay") as queued:
+        resp = client.post(
+            base,
+            json={"source": source, "title": "Training fällt aus", "text": "Regen."},
+            headers=H,
+        )
+        assert resp.status_code == 202, resp.get_json()
+    assert queued.call_args.args[1] == ["42"]
+    # The task sends and counts closed DMs.
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.dm import send_all
+
+    def closed(user_id, body):
+        raise DiscordError("closed", status=403)
+
+    with in_club(tenant), patch.object(api, "dm", side_effect=closed):
+        assert send_all(conn, ["42"], "T", "x", "Anna") == {
+            "sent": 0,
+            "closed": 1,
+            "failed": 0,
+        }
+    # Without the notify scope: refused.
+    conn.scopes = ["announce"]
+    db.session.commit()
+    resp = client.post(
+        base,
+        json={"source": source, "title": "x", "text": "y"},
+        headers=H,
+    )
+    assert resp.status_code == 409
+
+
+def test_roles_channel_button_shows_the_groups(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.group import Group
+
+    _conn(db, tenant)
+    db.session.add(Group(name="Chor", visibility="open"))
+    db.session.commit()
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": "gpick"},
+    }
+    answer = _signed(client, click).get_json()
+    assert answer["type"] == 4 and "Chor" in answer["data"]["content"]
+    assert answer["data"]["flags"] == 64
+
+
+def test_layout_with_own_names_and_several_new_categories(
+    client, db, club_auth, tenant, discord_settings
+):
+    conn = _conn(db, tenant, scopes=("announce", "channels"), channel_id=None)
+    server = LayoutServer()
+    base = f"/api/v1/discord/connections/{conn.id}/layout"
+    with patch.object(api, "bot", side_effect=server):
+        resp = client.post(
+            base,
+            json={
+                "slots": [
+                    {"key": "rules", "name": "Hausordnung", "category": "new:Info"},
+                    {"key": "announcements", "name": "news", "category": "new:Info"},
+                    {"key": "events", "name": "Termine", "category": "new:Anlässe"},
+                    {"key": "bot", "category": "903"},
+                ]
+            },
+            headers=H,
+        )
+        assert resp.status_code == 201, resp.get_json()
+        made = resp.get_json()["made"]
+        bad = client.post(
+            base, json={"slots": [{"key": "log", "category": "12345"}]}, headers=H
+        )
+    cats = [m for m in made if m["slot"] == "category"]
+    assert [c["name"] for c in cats] == ["Info", "Anlässe"]
+    by_slot = {m["slot"]: m for m in made}
+    assert by_slot["rules"]["name"] == "hausordnung"
+    assert by_slot["events"]["name"] == "termine"
+    by_id = {c["id"]: c for c in server.channels}
+    assert by_id[by_slot["rules"]["id"]]["parent_id"] == cats[0]["id"]
+    assert by_id[by_slot["announcements"]["id"]]["parent_id"] == cats[0]["id"]
+    assert by_id[by_slot["events"]["id"]]["parent_id"] == cats[1]["id"]
+    assert by_id[by_slot["bot"]["id"]]["parent_id"] == "903"
+    assert bad.status_code == 409

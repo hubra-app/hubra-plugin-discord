@@ -1,4 +1,5 @@
-"""Role sync: Discord roles follow the club's groups, functions and tiers.
+"""Role sync: Discord roles follow the club's groups, functions, tiers,
+Hubra roles and membership types.
 
 The club maps sources to Discord roles (``role_map``). For a member who
 linked their Discord account, the bot gives the mapped roles they should
@@ -20,6 +21,12 @@ from hubra.core.extensions import db
 from . import api
 
 MEMBERS = "members"
+TYPES = {
+    "regular": "Ordentliche Mitglieder",
+    "honorary": "Ehrenmitglieder",
+    "passive": "Passivmitglieder",
+    "trial": "Probemitglieder",
+}
 
 
 def sources() -> list[dict]:
@@ -27,8 +34,11 @@ def sources() -> list[dict]:
     from hubra.core.models.function import Function
     from hubra.core.models.group import Group
     from hubra.core.models.member import MembershipTier
+    from hubra.core.models.role import Role
 
     out = [{"key": MEMBERS, "label": "Active members", "kind": "members"}]
+    for key, label in TYPES.items():
+        out.append({"key": f"type:{key}", "label": label, "kind": "type"})
     for g in db.session.scalars(select(Group).order_by(Group.name)).all():
         out.append({"key": f"group:{g.id}", "label": g.name, "kind": "group"})
     for f in db.session.scalars(select(Function).order_by(Function.name)).all():
@@ -37,6 +47,8 @@ def sources() -> list[dict]:
         select(MembershipTier).order_by(MembershipTier.name)
     ).all():
         out.append({"key": f"tier:{t.id}", "label": t.name, "kind": "tier"})
+    for r in db.session.scalars(select(Role).order_by(Role.name)).all():
+        out.append({"key": f"role:{r.id}", "label": r.name, "kind": "role"})
     return out
 
 
@@ -58,6 +70,8 @@ def matches(source: str, member) -> bool:
     if source == MEMBERS:
         return True
     kind, _, raw = source.partition(":")
+    if kind == "type":
+        return (member.membership_type or "regular") == raw
     try:
         ident = int(raw)
     except ValueError:
@@ -87,6 +101,18 @@ def matches(source: str, member) -> bool:
         )
     if kind == "tier":
         return member.tier_id == ident
+    if kind == "role":
+        from hubra.core.models.member import member_roles
+
+        return (
+            db.session.scalar(
+                select(member_roles.c.member_id).where(
+                    member_roles.c.role_id == ident,
+                    member_roles.c.member_id == member.id,
+                )
+            )
+            is not None
+        )
     return False
 
 
@@ -116,13 +142,14 @@ def managed_map(conn) -> list[dict]:
     roles (group_roles.py)."""
     from .group_roles import role_sources as auto_sources
     from .groups import role_sources
+    from .member_role import role_sources as member_sources
 
     own = (
         list((conn.config or {}).get("role_map") or [])
         if apps.has_scope(conn, "roles")
         else []
     )
-    return own + role_sources(conn) + auto_sources(conn)
+    return own + role_sources(conn) + auto_sources(conn) + member_sources(conn)
 
 
 def apply(conn, user_id: str, want: set[str], label: str, names: dict | None = None):
@@ -159,11 +186,14 @@ def _name(member) -> str:
 
 
 def _ensure_group_roles(conn) -> None:
-    from . import group_roles
+    from . import group_roles, member_role
 
     if group_roles.missing(conn):
         for change in group_roles.ensure(conn):
             botlog.log(conn, "roles", True, f"group roles: {change}")
+    if member_role.missing(conn):
+        for change in member_role.ensure(conn):
+            botlog.log(conn, "roles", True, f"member role: {change}")
 
 
 def sync_member(conn, member, names: dict | None = None) -> str | None:
@@ -181,10 +211,12 @@ def sync_all(conn) -> int:
     from hubra.core.models.connected_app import ExternalAccount
     from hubra.core.models.member import Member
 
-    from . import group_roles
+    from . import group_roles, member_role
 
     for change in group_roles.ensure(conn):  # renames and removals too
         botlog.log(conn, "roles", True, f"group roles: {change}")
+    for change in member_role.ensure(conn):
+        botlog.log(conn, "roles", True, f"member role: {change}")
     if not managed_map(conn):
         return 0
     linked = set(

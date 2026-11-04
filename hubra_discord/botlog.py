@@ -39,6 +39,10 @@ TITLES = {
     "attendance": "✅ Attendance",
     "command": "⌨️ Command",
     "test": "🧪 Test",
+    "updated": "✏️ Updated",
+    "channels": "#️⃣ Channels",
+    "audit": "🔒 Permission check",
+    "layout": "🧱 Channel layout",
 }
 
 

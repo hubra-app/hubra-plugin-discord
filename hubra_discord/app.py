@@ -18,7 +18,7 @@ _log = logging.getLogger(__name__)
 
 # What the bot posts, each to its own channel if the club picks one, else to
 # the main channel (channel_id).
-KINDS = ("events", "posts", "polls", "reminders")
+KINDS = ("events", "posts", "polls", "reminders", "public_events")
 
 DEFAULT_CONFIG = {
     "channel_id": None,
@@ -62,9 +62,29 @@ DEFAULT_CONFIG = {
     # whether it gets only errors or everything the bot does and skips.
     "log_channel_id": None,
     "log_level": "errors",
+    # The "closes soon" post of a required poll mentions the linked
+    # members who haven't voted yet (nudge.py).
+    "nudge_voters": False,
+    # One role for every member now (member_role.py), for members-only
+    # channels; its name.
+    "member_role": False,
+    "member_role_name": "",
 }
 # Kept by the bot, not set by the club.
-INTERNAL = ("guild_name", "profile_applied", "scheduled_events", "auto_group_roles")
+INTERNAL = (
+    "guild_name",
+    "profile_applied",
+    "scheduled_events",
+    "auto_group_roles",
+    "posted",
+    "made_channels",
+    "auto_member_role",
+    # Public channels a club admin approved (audit.py): [{id, by, at}].
+    "public_ok",
+    # The channels the layout made (layout.py): {slot: channel id}.
+    "layout",
+    "audit_seen",
+)
 BOOLS = (
     "announce_events",
     "announce_posts",
@@ -81,6 +101,8 @@ BOOLS = (
     "hubra_news",
     "maintenance_notices",
     "group_roles",
+    "nudge_voters",
+    "member_role",
 )
 MAX_ROLE_MAP = 50
 
@@ -324,6 +346,24 @@ class DiscordApp:
                 from .tasks import sync_connection
 
                 after_commit(sync_connection.delay, conn.id)  # make or delete
+        if "member_role_name" in config:
+            out["member_role_name"] = str(config["member_role_name"] or "").strip()[
+                :100
+            ]
+        if "member_role" in config or "member_role_name" in config:
+            if out["member_role"] and not (
+                apps.has_scope(conn, "roles") or apps.has_scope(conn, "channels")
+            ):
+                raise apps.AppError("Turn on roles for this connection first")
+            if out["member_role"] != bool(
+                (conn.config or {}).get("member_role")
+            ) or out["member_role_name"] != (conn.config or {}).get(
+                "member_role_name", ""
+            ):
+                from .hooks import after_commit
+                from .tasks import sync_connection
+
+                after_commit(sync_connection.delay, conn.id)
         if "welcome_text" in config:
             text = str(config["welcome_text"] or "").strip()
             from .notify import MAX_WELCOME

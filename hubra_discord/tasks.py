@@ -73,8 +73,19 @@ def _posted(conn, action: str, body: dict, channel: str, sent) -> None:
     botlog.log(conn, action, True, f"{_title(body)} · {where}")
 
 
-def _send(self, conn, channel: str, body: dict, action: str, what: str) -> bool:
-    """Post *body* in *channel*, log the result, retry what can be retried."""
+def _send(
+    self,
+    conn,
+    channel: str,
+    body: dict,
+    action: str,
+    what: str,
+    ref: str | None = None,
+) -> bool:
+    """Post *body* in *channel*, log the result, retry what can be retried.
+
+    *ref* (``e:<event>`` / ``p:<poll>``): remember the message, to keep it
+    up to date (live.py)."""
     from hubra.core.tenant.context import current_tenant
 
     from .profile import brand
@@ -97,6 +108,10 @@ def _send(self, conn, channel: str, body: dict, action: str, what: str) -> bool:
         countdown = exc.retry_after or 2 ** (self.request.retries + 2)
         raise self.retry(exc=exc, countdown=countdown) from exc
     _posted(conn, action, body, channel, sent)
+    if ref and isinstance(sent, dict) and sent.get("id"):
+        from . import live
+
+        live.remember(conn, ref, channel, sent["id"])
     db.session.commit()
     return True
 
@@ -108,7 +123,11 @@ def _send(self, conn, channel: str, body: dict, action: str, what: str) -> bool:
     acks_late=True,
 )
 def send_announcement(
-    self, connection_id: int, body: dict, kind: str | None = None
+    self,
+    connection_id: int,
+    body: dict,
+    kind: str | None = None,
+    ref: str | None = None,
 ) -> None:
     from .app import channel_for
 
@@ -124,7 +143,7 @@ def send_announcement(
             )
             db.session.commit()
             return
-        _send(self, conn, channel, body, "announced", kind or "")
+        _send(self, conn, channel, body, "announced", kind or "", ref)
 
 
 def _role_task(self, connection_id: int, action, *args):
@@ -194,7 +213,38 @@ def sync_all_clubs() -> int:
         sync_connection.delay(connection_id)
         apply_profile.delay(connection_id)
         sync_events.delay(connection_id)
+        audit_connection.delay(connection_id)
     return len(ids)
+
+
+@celery_app.task(name="hubra_discord.tasks.audit_connection")
+def audit_connection(connection_id: int) -> int:
+    """Nightly permission check of the club's server; new findings go to
+    the bot log (audit.py)."""
+    from .audit import nightly
+
+    every = ("announce", "channels", "roles", "commands", "events", "notify")
+    with _connection(connection_id, every) as conn:
+        if conn is None:
+            return 0
+        found = nightly(conn)
+        db.session.commit()
+        return found
+
+
+@celery_app.task(name="hubra_discord.tasks.send_dm_broadcast")
+def send_dm_broadcast(
+    connection_id: int, user_ids: list, title: str, text: str, who: str = ""
+) -> dict | None:
+    """A club admin's direct message to a set of members (dm.py)."""
+    from .dm import send_all
+
+    with _connection(connection_id, "notify") as conn:
+        if conn is None:
+            return None
+        result = send_all(conn, [str(u) for u in user_ids], title, text, who)
+        db.session.commit()
+        return result
 
 
 @celery_app.task(name="hubra_discord.tasks.apply_profile", bind=True, max_retries=3)
@@ -249,19 +299,28 @@ def register_commands(self) -> None:
     max_retries=5,
     acks_late=True,
 )
-def send_to_group_channel(self, connection_id: int, group_id: int, body: dict) -> None:
-    """Post in a group's private channel (its events, polls, reminders)."""
-    from .groups import channel_for_group
+def send_to_group_channel(
+    self,
+    connection_id: int,
+    group_id: int | None,
+    body: dict,
+    ref: str | None = None,
+    source: str | None = None,
+) -> None:
+    """Post in a group's or function's private channel (its events, polls,
+    reminders)."""
+    from .groups import channel_for_source
 
+    source = source or f"group:{group_id}"
     with _connection(connection_id, "channels") as conn:
         if conn is None:
             return
-        channel = channel_for_group(conn, group_id)
+        channel = channel_for_source(conn, source)
         if not channel:
-            botlog.skipped(conn, _title(body), f"group {group_id} has no channel")
+            botlog.skipped(conn, _title(body), f"{source} has no channel")
             db.session.commit()
             return
-        _send(self, conn, channel, body, "announced", "in the group channel")
+        _send(self, conn, channel, body, "announced", "in the group channel", ref)
 
 
 @celery_app.task(name="hubra_discord.tasks.sync_events", bind=True, max_retries=3)
@@ -370,3 +429,79 @@ def post_log(self, connection_id: int, action: str, ok: bool, detail: str) -> No
         apps.record(conn, "log", False, text)
         _log.warning("discord club=%s log channel: %s", conn.tenant_id, text)
         db.session.commit()
+
+
+# ── Messages kept up to date (live.py) ───────────────────────────────────────
+
+
+def _live_task(self, connection_id: int, what: str, fn, *args):
+    with _connection(connection_id, ("announce", "channels")) as conn:
+        if conn is None:
+            return None
+        try:
+            done = fn(conn, *args)
+        except DiscordError as exc:
+            db.session.commit()
+            if not exc.retryable:
+                _failed(conn, "updated", exc, doing=what)
+                return None
+            raise self.retry(exc=exc, countdown=exc.retry_after or 30) from exc
+        db.session.commit()
+        return done
+
+
+@celery_app.task(name="hubra_discord.tasks.refresh_event", bind=True, max_retries=3)
+def refresh_event(self, connection_id: int, event_id: int, deleted: bool = False):
+    """An event's messages: places, a change, or "Abgesagt"."""
+    from . import live
+
+    return _live_task(
+        self,
+        connection_id,
+        "Updating an event message",
+        live.refresh_event,
+        event_id,
+        deleted,
+    )
+
+
+@celery_app.task(name="hubra_discord.tasks.finish_poll", bind=True, max_retries=3)
+def finish_poll(self, connection_id: int, poll_id: int):
+    """A closed poll's messages show the result."""
+    from . import live
+
+    return _live_task(
+        self, connection_id, "Showing a poll result", live.finish_poll, poll_id
+    )
+
+
+@celery_app.task(name="hubra_discord.tasks.tidy_messages")
+def tidy_messages() -> int:
+    """Every few minutes: polls whose closing time passed get their result,
+    events that are over lose their buttons."""
+    from sqlalchemy import select
+
+    from hubra.core.models.connected_app import ConnectedApp
+
+    from . import live
+
+    queued = 0
+    conns = db.session.scalars(
+        select(ConnectedApp).where(
+            ConnectedApp.provider == "discord", ConnectedApp.status == "active"
+        )
+    ).all()
+    for conn in conns:
+        if not live.posted(conn):
+            continue
+        with _connection(conn.id, ("announce", "channels")) as live_conn:
+            if live_conn is None:
+                continue
+            for poll_id in live.due_polls(live_conn):
+                finish_poll.delay(conn.id, poll_id)
+                queued += 1
+            for event_id in live.over_events(live_conn):
+                refresh_event.delay(conn.id, event_id)
+                queued += 1
+            db.session.commit()  # polls deleted in the app are forgotten
+    return queued
