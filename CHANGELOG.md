@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.6.0
+## 2.7.0
 
 - **Training cards.** Before a training of a group with its own channel, the
   bot posts a card there instead of the reminder: "Bin da", "Kann nicht",
@@ -17,6 +17,8 @@
 - **Feedback after events.** A few hours after an event: 1-5 and a comment,
   only for those who took part, anonymous; results under "Zahlen &
   Rückmeldungen".
+
+## 2.6.0
 
 - **Channel layout.** Kanäle › "Kanäle einrichten" makes #regeln, #ankündigungen,
   #rollen, #anlässe, #anlässe-öffentlich, #bot and #hubra-log in one step, in a
