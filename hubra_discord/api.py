@@ -32,6 +32,11 @@ MANAGE_ROLES = 1 << 28
 CHANGE_NICKNAME = 1 << 26
 # Scheduled events the bot made itself (create, edit, delete).
 CREATE_EVENTS = 1 << 44
+# Moderation (``moderate`` scope): remove people, delete reported messages.
+KICK_MEMBERS = 1 << 1
+MANAGE_GUILD = 1 << 5
+MANAGE_MESSAGES = 1 << 13
+CONNECT = 1 << 20
 
 PERMISSION_NAMES = {
     MANAGE_CHANNELS: "Manage Channels",
@@ -42,6 +47,8 @@ PERMISSION_NAMES = {
     MANAGE_ROLES: "Manage Roles",
     CHANGE_NICKNAME: "Change Nickname",
     CREATE_EVENTS: "Create Events",
+    KICK_MEMBERS: "Kick Members",
+    MANAGE_MESSAGES: "Manage Messages",
 }
 
 CANNOT_DM_CODE = 50007
@@ -309,6 +316,40 @@ def delete_event(guild_id: str, event_id: str) -> None:
     except DiscordError as exc:
         if exc.status != 404:  # already gone
             raise
+
+
+def kick(guild_id: str, user_id: str, reason: str) -> bool:
+    """Remove someone from the server. False when they weren't on it."""
+    try:
+        bot("DELETE", f"/guilds/{guild_id}/members/{user_id}", reason=reason)
+    except DiscordError as exc:
+        if exc.status == 404:
+            return False
+        raise
+    return True
+
+
+def message(channel_id: str, message_id: str) -> dict | None:
+    try:
+        return bot("GET", f"/channels/{channel_id}/messages/{message_id}")
+    except DiscordError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def delete_message(channel_id: str, message_id: str, reason: str) -> bool:
+    try:
+        bot("DELETE", f"/channels/{channel_id}/messages/{message_id}", reason=reason)
+    except DiscordError as exc:
+        if exc.status == 404:
+            return False
+        raise
+    return True
+
+
+def edit_message(channel_id: str, message_id: str, body: dict) -> dict:
+    return bot("PATCH", f"/channels/{channel_id}/messages/{message_id}", body)
 
 
 def gateway_url() -> str:

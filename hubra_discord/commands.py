@@ -65,9 +65,10 @@ COMMANDS = [
 
 def all_commands() -> list[dict]:
     from .create import COMMANDS as CREATE
+    from .mod import REPORT_COMMAND
     from .personal import COMMANDS as PERSONAL
 
-    return COMMANDS + PERSONAL + CREATE
+    return COMMANDS + PERSONAL + CREATE + [REPORT_COMMAND]
 
 
 def register() -> None:
@@ -140,6 +141,10 @@ def handle(conn, interaction: dict) -> dict:
 
     if kind == 2:
         name = data.get("name")
+        if name == "Melden" and data.get("type") == 3:  # Apps › Melden
+            from .mod import report_form
+
+            return report_form(conn, interaction)
         if name == "events":
             return _events(conn, member)
         if name == "verbinden":
@@ -164,6 +169,18 @@ def handle(conn, interaction: dict) -> dict:
         if data.get("name") == "beschluss" and member is not None:
             return autocomplete(conn, data)
         return {"type": 8, "data": {"choices": []}}
+
+    if kind == 5:  # a form (modal) came back
+        custom_id = str(data.get("custom_id", ""))
+        if custom_id.startswith("mrep:"):
+            from .mod import report_sent
+
+            return report_sent(conn, interaction)
+        if custom_id.startswith("fbt:"):
+            from .feedback import comment_sent
+
+            return comment_sent(conn, member, interaction)
+        return reply("Dieses Formular gilt nicht mehr.")
 
     if kind == 3:
         if not apps.has_scope(conn, "commands"):
@@ -190,6 +207,26 @@ def handle(conn, interaction: dict) -> dict:
             from .personal import attend
 
             return attend(conn, member, custom_id)
+        if action in ("mdel", "mdone"):  # a report card for the admins
+            from .mod import report_button
+
+            return report_button(conn, interaction, custom_id)
+        if action in ("gok", "gkick"):  # a newcomer card for the admins
+            from .mod import newcomer_button
+
+            return newcomer_button(conn, interaction, custom_id)
+        if action == "fb":
+            from .feedback import vote
+
+            return vote(conn, member, user.get("id", ""), custom_id)
+        if action == "fbc":
+            from .feedback import comment_form
+
+            return comment_form(conn, member, custom_id)
+        if action == "tatt":  # a training card in a group channel
+            from .training import click
+
+            return click(conn, member, custom_id)
         return reply("Diese Schaltfläche gilt nicht mehr.")
 
     return reply("Das kann Hubra nicht.")

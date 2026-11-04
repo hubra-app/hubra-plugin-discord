@@ -69,6 +69,30 @@ DEFAULT_CONFIG = {
     # channels; its name.
     "member_role": False,
     "member_role_name": "",
+    # A training of a group with its own channel gets a card there before it
+    # starts, with "Bin da" / "Kann nicht" and the count (training.py).
+    "training_posts": True,
+    # A locked voice channel whose name shows the member count (stats.py),
+    # renamed every night; its name pattern with {n}.
+    "stats_channel": False,
+    "stats_name": "",
+    # Monday morning: the week's events in the events channel (digest.py),
+    # and the club's numbers for the admins in the moderation channel.
+    "weekly_events": False,
+    "weekly_stats": False,
+    # Moderation (``moderate`` scope, mod.py, leavers.py): reports and new
+    # people go to this channel (else the bot log channel).
+    "mod_channel_id": None,
+    "reports": True,
+    # Someone who isn't a linked member joins: the admins get a card to let
+    # them in as a guest (a role) or remove them.
+    "guest_queue": False,
+    "guest_role_name": "",
+    # People who left the club are removed from the server (nightly).
+    "kick_leavers": False,
+    # After an event: "Wie war es?" with 1-5 stars for those who came
+    # (feedback.py).
+    "event_feedback": False,
 }
 # Kept by the bot, not set by the club.
 INTERNAL = (
@@ -84,6 +108,12 @@ INTERNAL = (
     # The channels the layout made (layout.py): {slot: channel id}.
     "layout",
     "audit_seen",
+    # stats.py, digest.py, mod.py, leavers.py, feedback.py
+    "stats_channel_id",
+    "weekly_sent",
+    "guest_role",
+    "kicked",
+    "feedback",
 )
 BOOLS = (
     "announce_events",
@@ -103,7 +133,22 @@ BOOLS = (
     "group_roles",
     "nudge_voters",
     "member_role",
+    "training_posts",
+    "stats_channel",
+    "weekly_events",
+    "weekly_stats",
+    "reports",
+    "guest_queue",
+    "kick_leavers",
+    "event_feedback",
 )
+# Switches that need a scope the connection may not have.
+NEEDS_SCOPE = {
+    "stats_channel": "channels",
+    "kick_leavers": "moderate",
+    "guest_queue": "moderate",
+    "event_feedback": "commands",
+}
 MAX_ROLE_MAP = 50
 
 
@@ -120,6 +165,16 @@ def _permissions(scopes) -> int:
     if "channels" in scopes:
         bits |= (
             api.MANAGE_CHANNELS
+            | api.MANAGE_ROLES
+            | api.VIEW_CHANNEL
+            | api.SEND_MESSAGES
+            | api.EMBED_LINKS
+            | api.READ_MESSAGE_HISTORY
+        )
+    if "moderate" in scopes:
+        bits |= (
+            api.KICK_MEMBERS
+            | api.MANAGE_MESSAGES
             | api.MANAGE_ROLES
             | api.VIEW_CHANNEL
             | api.SEND_MESSAGES
@@ -168,6 +223,8 @@ def used_channels(config: dict) -> dict[str, list[str]]:
             used.setdefault(str(channel), []).append(kind)
     if config.get("log_channel_id"):
         used.setdefault(str(config["log_channel_id"]), []).append("log")
+    if config.get("mod_channel_id"):
+        used.setdefault(str(config["mod_channel_id"]), []).append("mod")
     return used
 
 
@@ -338,6 +395,19 @@ class DiscordApp:
         for key in BOOLS:
             if key in config:
                 out[key] = bool(config[key])
+        for key, scope in NEEDS_SCOPE.items():
+            if config.get(key) and not apps.has_scope(conn, scope):
+                raise apps.AppError(f"Turn on «{scope}» for this connection first")
+        for key, limit in (("stats_name", 90), ("guest_role_name", 100)):
+            if key in config:
+                out[key] = " ".join(str(config[key] or "").split())[:limit]
+        if out["stats_name"] and "{n}" not in out["stats_name"]:
+            raise apps.AppError("The stats channel name needs {n} for the number")
+        if "stats_channel" in config or "stats_name" in config:
+            from .hooks import after_commit
+            from .tasks import daily_extras
+
+            after_commit(daily_extras.delay, conn.id)
         if "group_roles" in config:
             if out["group_roles"] and not apps.has_scope(conn, "roles"):
                 raise apps.AppError("Turn on roles for this connection first")
@@ -391,6 +461,7 @@ class DiscordApp:
         needs_server = (
             "channel_id" in config
             or "log_channel_id" in config
+            or "mod_channel_id" in config
             or "channels" in config
             or "role_map" in config
             or (str(config.get("mention", "")).startswith("role:"))
@@ -423,6 +494,12 @@ class DiscordApp:
             if channel is not None and str(channel) not in server_channels:
                 raise apps.AppError("That channel isn't a text channel on the server")
             out["log_channel_id"] = str(channel) if channel else None
+
+        if "mod_channel_id" in config:
+            channel = config["mod_channel_id"] or None
+            if channel is not None and str(channel) not in server_channels:
+                raise apps.AppError("That channel isn't a text channel on the server")
+            out["mod_channel_id"] = str(channel) if channel else None
 
         if "log_level" in config:
             from .botlog import LEVELS

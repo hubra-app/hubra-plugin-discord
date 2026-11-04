@@ -200,6 +200,7 @@ def _server_call(connection_id: int, fn, status: int = 200):
     from .audit import AuditError
     from .dm import DmError
     from .layout import LayoutError
+    from .leavers import LeaversError
     from .server import ServerError
 
     found, error = _club_connection(connection_id)
@@ -213,7 +214,7 @@ def _server_call(connection_id: int, fn, status: int = 200):
         refuse_during_impersonation()
     try:
         result = fn(member, conn)
-    except (ServerError, AuditError, LayoutError, DmError) as exc:
+    except (ServerError, AuditError, LayoutError, DmError, LeaversError) as exc:
         db.session.rollback()
         return api_error("DISCORD_FAILED", str(exc), 409)
     db.session.commit()
@@ -395,3 +396,52 @@ def server_dm_send(connection_id: int):
         return result
 
     return _server_call(connection_id, run, 202)
+
+
+@discord_bp.get("/connections/<int:connection_id>/leavers")
+def server_leavers(connection_id: int):
+    """Former members still on the server (they go when "kick_leavers" is
+    on, or now with POST)."""
+    from .leavers import check
+
+    return _server_call(connection_id, lambda m, c: check(c))
+
+
+@discord_bp.post("/connections/<int:connection_id>/leavers")
+def server_leavers_run(connection_id: int):
+    from .leavers import require, run
+
+    def go(member, conn):
+        require(conn)  # the scope, in the admin's words
+        result = run(conn, member.name)
+        if result["removed"]:
+            _audit_entry(
+                member,
+                conn,
+                "discord.leavers_removed",
+                f"{result['removed']} ehemalige Mitglieder vom Discord-Server entfernt",
+            )
+        return result
+
+    return _server_call(connection_id, go)
+
+
+@discord_bp.get("/connections/<int:connection_id>/feedback")
+def server_feedback(connection_id: int):
+    """Answers to "Wie war …?" after events, without who gave them."""
+    from .feedback import results
+
+    return _server_call(connection_id, lambda m, c: {"events": results(c)})
+
+
+@discord_bp.get("/connections/<int:connection_id>/stats")
+def server_stats(connection_id: int):
+    """Last week's numbers, as Monday's post would show them."""
+    from .stats import numbers
+
+    def go(member, conn):
+        n = numbers()
+        n["from"], n["to"] = n["from"].isoformat(), n["to"].isoformat()
+        return n
+
+    return _server_call(connection_id, go)

@@ -104,6 +104,17 @@ interface DiscordConfig {
   nudge_voters: boolean
   member_role: boolean
   member_role_name: string
+  training_posts: boolean
+  stats_channel: boolean
+  stats_name: string
+  weekly_events: boolean
+  weekly_stats: boolean
+  mod_channel_id: string | null
+  reports: boolean
+  guest_queue: boolean
+  guest_role_name: string
+  kick_leavers: boolean
+  event_feedback: boolean
 }
 
 const MAX_WELCOME = 1500
@@ -160,6 +171,17 @@ function readConfig(c: Connection): DiscordConfig {
     nudge_voters: raw.nudge_voters ?? false,
     member_role: raw.member_role ?? false,
     member_role_name: raw.member_role_name ?? '',
+    training_posts: raw.training_posts ?? true,
+    stats_channel: raw.stats_channel ?? false,
+    stats_name: raw.stats_name ?? '',
+    weekly_events: raw.weekly_events ?? false,
+    weekly_stats: raw.weekly_stats ?? false,
+    mod_channel_id: raw.mod_channel_id ?? null,
+    reports: raw.reports ?? true,
+    guest_queue: raw.guest_queue ?? false,
+    guest_role_name: raw.guest_role_name ?? '',
+    kick_leavers: raw.kick_leavers ?? false,
+    event_feedback: raw.event_feedback ?? false,
   }
 }
 
@@ -202,6 +224,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
   const events = connection.scopes.includes('events')
   const channels = connection.scopes.includes('channels')
   const dms = connection.scopes.includes('notify')
+  const moderate = connection.scopes.includes('moderate')
   const missing = options.data.missingPermissions ?? []
   const channelProblems = options.data.channelProblems ?? []
   const groupsChanged = JSON.stringify(rows) !== JSON.stringify(groupRows(config.group_channels))
@@ -235,6 +258,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
         club_embeds: config.club_embeds,
         log_channel_id: config.log_channel_id,
         log_level: config.log_level,
+        weekly_stats: config.weekly_stats,
       }
       if (announce) {
         Object.assign(sent, {
@@ -249,6 +273,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           hubra_news: config.hubra_news,
           maintenance_notices: config.maintenance_notices,
           nudge_voters: config.nudge_voters,
+          weekly_events: config.weekly_events,
         })
       }
       if (roles) {
@@ -260,10 +285,14 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
       if (commands) {
         sent.poll_buttons = config.poll_buttons
         sent.self_checkin = config.self_checkin
+        sent.event_feedback = config.event_feedback
       }
       if (events) sent.discord_events = config.discord_events
       if (channels) {
         sent.group_announce = config.group_announce
+        sent.training_posts = config.training_posts
+        sent.stats_channel = config.stats_channel
+        sent.stats_name = config.stats_name
         // Only when the list changed: each save checks the channels on Discord.
         if (groupsChanged)
           (sent as Record<string, unknown>).group_channels = rows
@@ -274,6 +303,15 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
               name: r.name,
               categoryId: r.categoryId,
             }))
+      }
+      if (moderate) {
+        Object.assign(sent, {
+          mod_channel_id: config.mod_channel_id,
+          reports: config.reports,
+          guest_queue: config.guest_queue,
+          guest_role_name: config.guest_role_name,
+          kick_leavers: config.kick_leavers,
+        })
       }
       if (dms) {
         sent.welcome_dm = config.welcome_dm
@@ -356,6 +394,8 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           {(commands || events || dms) && (
             <Tabs.Tab value="members">{t('discord.tab.members', 'Mitglieder')}</Tabs.Tab>
           )}
+          {moderate && <Tabs.Tab value="moderate">{t('discord.tab.moderate', 'Moderation')}</Tabs.Tab>}
+          <Tabs.Tab value="numbers">{t('discord.tab.numbers', 'Zahlen & Rückmeldungen')}</Tabs.Tab>
           <Tabs.Tab value="messages">{t('discord.tab.messages', 'Nachrichten')}</Tabs.Tab>
           <Tabs.Tab value="look">{t('discord.tab.look', 'Aussehen & Protokoll')}</Tabs.Tab>
         </Tabs.List>
@@ -448,6 +488,15 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                       )}
                       checked={config.nudge_voters}
                       onChange={(e) => set({ nudge_voters: e.currentTarget.checked })}
+                    />
+                    <Switch
+                      label={t('discord.weeklyEvents', 'Montags die Anlässe der Woche')}
+                      description={t(
+                        'discord.weeklyEventsHint',
+                        'Ab 7 Uhr eine Übersicht der nächsten sieben Tage im Kanal für Anlässe, mit Links zum Anmelden. Trainings stehen nicht drin.',
+                      )}
+                      checked={config.weekly_events}
+                      onChange={(e) => set({ weekly_events: e.currentTarget.checked })}
                     />
                     <Select
                       label={t('discord.mention', 'Erwähnen')}
@@ -693,6 +742,17 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                       checked={config.self_checkin}
                       onChange={(e) => set({ self_checkin: e.currentTarget.checked })}
                     />
+                    {channels && (
+                      <Switch
+                        label={t('discord.trainingPosts', 'Trainingskarte im Gruppenkanal')}
+                        description={t(
+                          'discord.trainingPostsHint',
+                          'Statt der Erinnerung vor einem Training: eine Karte im Kanal der Gruppe mit «Bin da», «Kann nicht» und wie viele kommen. Die Zahl geht mit jedem Klick nach.',
+                        )}
+                        checked={config.training_posts}
+                        onChange={(e) => set({ training_posts: e.currentTarget.checked })}
+                      />
+                    )}
                   </>
                 )}
 
@@ -756,6 +816,131 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                 )}
             </>,
           )}
+        {moderate &&
+          settingsTab('moderate',
+            <>
+              <Text size="xs" c="dimmed">
+                {t(
+                  'discord.modHint',
+                  'Meldungen und neue Leute gehen als Karte in diesen Kanal. Er sollte nur für Admins sein (wie #hubra-log). Die Knöpfe darauf prüfen die Rechte auf Discord: Nachrichten verwalten, Rollen verwalten, Mitglieder kicken.',
+                )}
+              </Text>
+              <Select
+                label={t('discord.modChannel', 'Moderationskanal')}
+                placeholder={t('discord.modChannelLog', 'Der Protokoll-Kanal')}
+                data={channelData}
+                value={config.mod_channel_id}
+                onChange={(v) => set({ mod_channel_id: v })}
+                searchable
+                clearable
+              />
+              <Switch
+                label={t('discord.reports', 'Nachrichten melden')}
+                description={t(
+                  'discord.reportsHint',
+                  'Rechtsklick auf eine Nachricht › Apps › «Melden». Wer meldet, schreibt kurz warum; die Admins bekommen die Nachricht mit «Löschen» und «Erledigt».',
+                )}
+                checked={config.reports}
+                onChange={(e) => set({ reports: e.currentTarget.checked })}
+                disabled={!commands}
+              />
+              <Group gap="sm" align="flex-end" wrap="wrap">
+                <Switch
+                  style={{ flex: '2 1 260px' }}
+                  label={t('discord.guestQueue', 'Neue Leute prüfen')}
+                  description={t(
+                    'discord.guestQueueHint',
+                    'Wer beitritt und kein verknüpftes Mitglied ist, erscheint als Karte: «Als Gast zulassen» gibt die Gast-Rolle, «Entfernen» wirft die Person raus. Braucht den Gateway-Dienst der Plattform.',
+                  )}
+                  checked={config.guest_queue}
+                  onChange={(e) => set({ guest_queue: e.currentTarget.checked })}
+                  disabled={!commands}
+                />
+                {config.guest_queue && (
+                  <TextInput
+                    style={{ flex: '1 1 160px' }}
+                    size="xs"
+                    label={t('discord.guestRoleName', 'Name der Gast-Rolle')}
+                    placeholder="Gast"
+                    maxLength={100}
+                    value={config.guest_role_name}
+                    onChange={(e) => set({ guest_role_name: e.currentTarget.value })}
+                  />
+                )}
+              </Group>
+              {!commands && (
+                <Text size="xs" c="orange">
+                  {t('discord.modNeedsCommands', 'Melden und neue Leute brauchen auch den Bereich «Befehle».')}
+                </Text>
+              )}
+              <Switch
+                label={t('discord.kickLeavers', 'Ausgetretene vom Server entfernen')}
+                description={t(
+                  'discord.kickLeaversHint',
+                  'Jede Nacht: wer nicht mehr Mitglied ist (archiviert oder gelöscht) und Discord verknüpft hatte, wird vom Server entfernt. Gäste, die nie Mitglied waren, bleiben. Wer einmal entfernt wurde, wird nicht nochmals entfernt.',
+                )}
+                checked={config.kick_leavers}
+                onChange={(e) => set({ kick_leavers: e.currentTarget.checked })}
+              />
+              <LeaversCard connection={connection} />
+            </>,
+          )}
+        {settingsTab('numbers',
+          <>
+            {channels && (
+              <Group gap="sm" align="flex-end" wrap="wrap">
+                <Switch
+                  style={{ flex: '2 1 260px' }}
+                  label={t('discord.statsChannel', 'Mitgliederzahl als Kanal')}
+                  description={t(
+                    'discord.statsChannelHint',
+                    'Ein Sprachkanal zuoberst, dessen Name die Zahl der Mitglieder zeigt. Alle sehen ihn, niemand kann beitreten. Jede Nacht aktualisiert.',
+                  )}
+                  checked={config.stats_channel}
+                  onChange={(e) => set({ stats_channel: e.currentTarget.checked })}
+                />
+                {config.stats_channel && (
+                  <TextInput
+                    style={{ flex: '1 1 200px' }}
+                    size="xs"
+                    label={t('discord.statsName', 'Name ({n} = Zahl)')}
+                    placeholder="👥 Mitglieder: {n}"
+                    maxLength={90}
+                    value={config.stats_name}
+                    error={
+                      config.stats_name && !config.stats_name.includes('{n}')
+                        ? t('discord.statsNameN', 'Mit {n} für die Zahl')
+                        : undefined
+                    }
+                    onChange={(e) => set({ stats_name: e.currentTarget.value })}
+                  />
+                )}
+              </Group>
+            )}
+            <Switch
+              label={t('discord.weeklyStats', 'Montags die Zahlen der Woche für die Admins')}
+              description={t(
+                'discord.weeklyStatsHint',
+                'Im Moderations- oder Protokoll-Kanal: Mitglieder, neu und ausgetreten, mit Discord verknüpft, Anlässe und Trainings.',
+              )}
+              checked={config.weekly_stats}
+              onChange={(e) => set({ weekly_stats: e.currentTarget.checked })}
+            />
+            <StatsCard connection={connection} />
+            {commands && (
+              <Switch
+                label={t('discord.eventFeedback', 'Nach Anlässen fragen, wie es war')}
+                description={t(
+                  'discord.eventFeedbackHint',
+                  'Ein paar Stunden nach dem Ende: 1 bis 5 und ein Kommentar, dort wo der Anlass angekündigt wurde. Nur wer angemeldet war oder eingecheckt hat. Anonym. Trainings ausgenommen.',
+                )}
+                checked={config.event_feedback}
+                onChange={(e) => set({ event_feedback: e.currentTarget.checked })}
+              />
+            )}
+            <FeedbackCard connection={connection} />
+          </>,
+        )}
         <Tabs.Panel value="messages" pt="md">
           <MessagesPanel connection={connection} />
         </Tabs.Panel>
@@ -1894,3 +2079,200 @@ registerPlugin({
   ],
   translations,
 })
+
+
+// ── Moderation, Zahlen, Rückmeldungen ────────────────────────────────────────
+
+interface Leavers {
+  people: { memberId: number; name: string; discordId: string }[]
+  on: boolean
+}
+
+function LeaversCard({ connection }: { connection: Connection }) {
+  const { t } = useT()
+  const { notify } = useToast()
+  const qc = useQueryClient()
+  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const key = ['discord-leavers', connection.id]
+  const q = useQuery({
+    queryKey: key,
+    queryFn: () => apiFetch<Leavers>(`/discord/connections/${connection.id}/leavers`),
+  })
+  const run = async () => {
+    setBusy(true)
+    try {
+      const r = await apiFetch<{ removed: number; failed: number }>(
+        `/discord/connections/${connection.id}/leavers`,
+        { method: 'POST' },
+      )
+      notify(
+        r.failed ? 'warning' : 'success',
+        t('discord.leaversDone', '{{n}} vom Server entfernt', { n: r.removed }),
+        r.failed ? t('discord.leaversFailed', '{{n}} gingen nicht, siehe Bot-Protokoll', { n: r.failed }) : undefined,
+      )
+      setConfirm(false)
+      qc.invalidateQueries({ queryKey: key })
+    } catch (err) {
+      notify('error', t('discord.leaversError', 'Entfernen ging nicht'), (err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Paper withBorder p="sm" radius="md">
+      <Group justify="space-between" mb={6} wrap="wrap">
+        <Text fw={600} size="sm">
+          {t('discord.leaversTitle', 'Ehemalige Mitglieder auf dem Server')}
+        </Text>
+        <Button
+          size="xs"
+          color="red"
+          variant="light"
+          disabled={!q.data?.people.length}
+          onClick={() => setConfirm(true)}
+        >
+          {t('discord.leaversNow', 'Jetzt entfernen')}
+        </Button>
+      </Group>
+      {q.isError && (
+        <Text size="sm" c="red">
+          {(q.error as Error).message}
+        </Text>
+      )}
+      {q.data && q.data.people.length === 0 && (
+        <Text size="sm" c="dimmed">
+          {t('discord.leaversNone', 'Niemand: alle Ehemaligen sind schon weg.')}
+        </Text>
+      )}
+      {q.data && q.data.people.length > 0 && (
+        <Group gap={6}>
+          {q.data.people.map((p) => (
+            <Badge key={p.discordId} variant="light" color="gray">
+              {p.name}
+            </Badge>
+          ))}
+        </Group>
+      )}
+      <ConfirmModal
+        open={confirm && !busy}
+        onClose={() => setConfirm(false)}
+        onConfirm={() => void run()}
+        title={t('discord.leaversConfirmTitle', 'Vom Server entfernen?')}
+        body={t(
+          'discord.leaversConfirm',
+          '{{n}} ehemalige Mitglieder werden vom Discord-Server entfernt. Sie können über eine Einladung wieder beitreten.',
+          { n: q.data?.people.length ?? 0 },
+        )}
+        confirmLabel={t('discord.leaversNow', 'Jetzt entfernen')}
+      />
+    </Paper>
+  )
+}
+
+interface Stats {
+  members: number
+  joined: number
+  left: number
+  linked: number
+  events: number
+  trainings: number
+  present: number
+  from: string
+  to: string
+}
+
+function StatsCard({ connection }: { connection: Connection }) {
+  const { t } = useT()
+  const q = useQuery({
+    queryKey: ['discord-stats', connection.id],
+    queryFn: () => apiFetch<Stats>(`/discord/connections/${connection.id}/stats`),
+  })
+  if (!q.data) return null
+  const n = q.data
+  const cells: [string, string | number][] = [
+    [t('discord.stat.members', 'Mitglieder'), n.members],
+    [t('discord.stat.new', 'Neu (7 Tage)'), `+${n.joined} / −${n.left}`],
+    [
+      t('discord.stat.linked', 'Mit Discord'),
+      n.members ? `${n.linked} (${Math.round((100 * n.linked) / n.members)} %)` : n.linked,
+    ],
+    [t('discord.stat.trainings', 'Trainings · eingecheckt'), `${n.trainings} · ${n.present}`],
+  ]
+  return (
+    <Paper withBorder p="sm" radius="md">
+      <Text size="xs" c="dimmed" mb={6}>
+        {t('discord.statsPreview', 'Letzte Woche, wie am Montag gepostet')}
+      </Text>
+      <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">
+        {cells.map(([label, value]) => (
+          <div key={label}>
+            <Text size="xs" c="dimmed">
+              {label}
+            </Text>
+            <Text fw={700}>{value}</Text>
+          </div>
+        ))}
+      </SimpleGrid>
+    </Paper>
+  )
+}
+
+interface FeedbackEvent {
+  eventId: number
+  title: string
+  date: string | null
+  count: number
+  average: number | null
+  spread: number[]
+  comments: string[]
+}
+
+function FeedbackCard({ connection }: { connection: Connection }) {
+  const { t } = useT()
+  const q = useQuery({
+    queryKey: ['discord-feedback', connection.id],
+    queryFn: () =>
+      apiFetch<{ events: FeedbackEvent[] }>(`/discord/connections/${connection.id}/feedback`),
+  })
+  const list = q.data?.events ?? []
+  return (
+    <Paper withBorder p="sm" radius="md">
+      <Text fw={600} size="sm" mb={6}>
+        {t('discord.feedbackTitle', 'Rückmeldungen nach Anlässen')}
+      </Text>
+      {list.length === 0 && (
+        <Text size="sm" c="dimmed">
+          {t('discord.feedbackNone', 'Noch keine. Sie erscheinen hier nach dem nächsten Anlass.')}
+        </Text>
+      )}
+      <Stack gap="sm">
+        {list.map((e) => (
+          <div key={e.eventId}>
+            <Group justify="space-between" wrap="nowrap" gap="xs">
+              <Text size="sm" fw={600} truncate>
+                {e.title}
+              </Text>
+              <Text size="sm" style={{ whiteSpace: 'nowrap' }}>
+                {e.average != null ? `★ ${e.average.toFixed(1)}` : '–'}{' '}
+                <Text span size="xs" c="dimmed">
+                  {t('discord.feedbackCount', '{{n}} Antworten', { n: e.count })}
+                </Text>
+              </Text>
+            </Group>
+            {e.date && (
+              <Text size="xs" c="dimmed">
+                {new Date(e.date).toLocaleDateString('de-CH')}
+              </Text>
+            )}
+            {e.comments.slice(-3).map((c, i) => (
+              <Text key={i} size="xs" mt={2} style={{ fontStyle: 'italic' }}>
+                «{c}»
+              </Text>
+            ))}
+          </div>
+        ))}
+      </Stack>
+    </Paper>
+  )
+}

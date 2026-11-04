@@ -87,6 +87,12 @@ module = Module(
                     "Only the group's members who linked Discord see it.",
                 ),
                 AppScope(
+                    "moderate",
+                    "Moderate: reports, new people and people who left the club",
+                    "Removes people only when you say so; deletes only "
+                    "messages an admin picks.",
+                ),
+                AppScope(
                     "notify",
                     "Send direct messages: notifications members ask for, "
                     "and a welcome for new people",
@@ -120,6 +126,12 @@ module = Module(
         ),
         # Polls that closed on their own show their result; events that
         # are over lose their buttons (live.py).
+        # Monday's posts and feedback after events.
+        Schedule(
+            "discord-hourly",
+            "hubra_discord.tasks.hourly",
+            every=3600,
+        ),
         Schedule(
             "discord-tidy-messages",
             "hubra_discord.tasks.tidy_messages",
