@@ -2,6 +2,27 @@
 
 ## 2.6.0
 
+- **Settings page in tabs.** Übersicht (main channel, what is posted,
+  live messages, the bot's rights), Ankündigungen, Kanäle, Rollen,
+  Mitglieder, Nachrichten, Aussehen & Protokoll. One save button per tab.
+- **Channels from Hubra.** The Kanäle tab lists the server's channels by
+  category and shows what Hubra uses each one for, whether it is private and
+  whether the bot can post there. Admins can create channels (private by
+  default), rename them, change the topic and move them to a category. Hubra
+  only deletes channels the bot made itself, and never one still in use.
+- **Nachrichten tab.** The events and polls the bot keeps up to date, with
+  "Jetzt aktualisieren" and "Nicht mehr aktualisieren".
+- **New commands.** /anlass and /umfrage create an event or poll from
+  Discord, /beschluss a circular resolution (Ja/Nein/Enthaltung, for a
+  function, closes itself once everyone voted), /gruppen joins or leaves
+  open groups with buttons, /hilfe lists everything. Creating needs the same
+  rights as in Hubra.
+- **"Vielleicht"** button on events, and "· N vielleicht" in the places line.
+- **Remind non-voters.** Optional: the closing reminder of a required poll
+  mentions the linked members who have not voted yet.
+- Fixed: saving the settings dropped the list of posted messages, so they
+  were no longer kept up to date.
+
 - **Messages stay up to date.** The bot remembers where it posted an event
   or a poll and edits that message later: an event shows the places taken
   ("8 / 20 · 12 frei", "ausgebucht (Warteliste)") after every sign-up or
