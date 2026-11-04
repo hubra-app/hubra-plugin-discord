@@ -62,9 +62,19 @@ DEFAULT_CONFIG = {
     # whether it gets only errors or everything the bot does and skips.
     "log_channel_id": None,
     "log_level": "errors",
+    # The "closes soon" post of a required poll mentions the linked
+    # members who haven't voted yet (nudge.py).
+    "nudge_voters": False,
 }
 # Kept by the bot, not set by the club.
-INTERNAL = ("guild_name", "profile_applied", "scheduled_events", "auto_group_roles")
+INTERNAL = (
+    "guild_name",
+    "profile_applied",
+    "scheduled_events",
+    "auto_group_roles",
+    "posted",
+    "made_channels",
+)
 BOOLS = (
     "announce_events",
     "announce_posts",
@@ -81,6 +91,7 @@ BOOLS = (
     "hubra_news",
     "maintenance_notices",
     "group_roles",
+    "nudge_voters",
 )
 MAX_ROLE_MAP = 50
 

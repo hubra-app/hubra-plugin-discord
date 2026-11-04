@@ -1980,7 +1980,9 @@ def test_deleted_event_is_marked_cancelled(client, db, club_auth, tenant):
         client.delete(f"/api/v1/events/{event_id}", headers=H)
     refresh.assert_called_with(conn.id, event_id, True)
 
-    old = {"embeds": [{"title": "📅 BBQ", "fields": [{"name": "👥 Plätze", "value": "3"}]}]}
+    old = {
+        "embeds": [{"title": "📅 BBQ", "fields": [{"name": "👥 Plätze", "value": "3"}]}]
+    }
 
     def server(method, path, body=None, **_):
         return old if method == "GET" else {}
@@ -2001,7 +2003,9 @@ def test_message_deleted_on_discord_is_forgotten(db, tenant):
     from hubra_discord.tasks import refresh_event
 
     conn = _conn(db, tenant)
-    event = ClubEvent(title="Gone", date=date.today() + timedelta(days=3), type="Social")
+    event = ClubEvent(
+        title="Gone", date=date.today() + timedelta(days=3), type="Social"
+    )
     db.session.add(event)
     db.session.commit()
     live.remember(conn, live.event_key(event.id), CHANNEL, "m3")
@@ -2070,3 +2074,380 @@ def test_posted_list_stays_small(db, tenant):
     known = live.posted(conn)
     assert len(known) == live.MAX_KEYS
     assert "e:0" not in known and f"e:{live.MAX_KEYS + 4}" in known
+
+
+# ── Doing club work from Discord (create.py) ─────────────────────────────────
+
+
+def _with(name, user="42", **options):
+    cmd = _command(name, user=user)
+    cmd["data"]["options"] = [{"name": k, "value": v} for k, v in options.items()]
+    return cmd
+
+
+def test_dates_and_times_as_people_type_them():
+    from hubra_discord.create import parse_closing, parse_date, parse_time
+
+    today = date(2026, 12, 20)
+    assert parse_date("heute", today) == today
+    assert parse_date("morgen", today) == date(2026, 12, 21)
+    assert parse_date("24.12.2026", today) == date(2026, 12, 24)
+    assert parse_date("3.1.", today) == date(2027, 1, 3)  # next one
+    assert parse_date("31.02.2026", today) is None
+    assert parse_time("19.00") == "19:00"
+    assert parse_time("9:30 - 11:00") == "09:30-11:00"
+    assert parse_time("") == "" and parse_time("abends") is None
+    assert parse_closing("") is None and parse_closing("bald") is False
+    assert parse_closing("24.12.2030 18:00").hour == 18
+
+
+def test_new_event_from_discord(client, db, tenant, trainer, queued):
+    from hubra.core.models.event import ClubEvent
+
+    _conn(db, tenant)
+    day = (date.today() + timedelta(days=5)).strftime("%d.%m.%Y")
+    text = _signed(
+        client,
+        _with(
+            "anlass",
+            titel="Grillabend",
+            datum=day,
+            zeit="18:00-22:00",
+            ort="Clubhaus",
+            oeffentlich=True,
+        ),
+    ).get_json()["data"]["content"]
+    assert "Grillabend" in text and "erstellt" in text
+    event = db.session.query(ClubEvent).filter_by(title="Grillabend").one()
+    assert (
+        event.time == "18:00-22:00" and event.is_public and event.location == "Clubhaus"
+    )
+    assert queued.called  # announced like one made in the app
+
+
+def test_new_event_needs_a_linked_member_and_a_readable_date(
+    client, db, tenant, trainer
+):
+    _conn(db, tenant)
+    text = _signed(
+        client, _with("anlass", user="999", titel="X", datum="morgen")
+    ).get_json()
+    assert "Verknüpfe" in text["data"]["content"]
+    text = _signed(client, _with("anlass", titel="X", datum="irgendwann")).get_json()
+    assert "Datum verstehe ich nicht" in text["data"]["content"]
+
+
+def test_new_poll_from_discord(client, db, tenant, trainer):
+    from hubra.core.models.poll import Poll
+
+    _conn(db, tenant)
+    text = _signed(
+        client,
+        _with("umfrage", frage="Pizza oder Pasta?", optionen="Pizza; Pasta; Egal"),
+    ).get_json()["data"]["content"]
+    assert "gestartet" in text
+    poll = db.session.query(Poll).filter_by(question="Pizza oder Pasta?").one()
+    assert [o.label for o in poll.options] == ["Pizza", "Pasta", "Egal"]
+    text = _signed(client, _with("umfrage", frage="?", optionen="nur eine")).get_json()
+    assert "mindestens zwei" in text["data"]["content"]
+
+
+def test_circular_resolution_for_a_function(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.function import Function, FunctionHolder
+    from hubra.core.models.poll import Poll
+
+    _conn(db, tenant)
+    board = Function(name="Vorstand")
+    db.session.add(board)
+    db.session.flush()
+    db.session.add(
+        FunctionHolder(function_id=board.id, member_id=seeded_db["admin"].id)
+    )
+    db.session.commit()
+
+    typing = {
+        "type": 4,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {
+            "name": "beschluss",
+            "options": [{"name": "funktion", "value": "vor", "focused": True}],
+        },
+    }
+    choices = _signed(client, typing).get_json()["data"]["choices"]
+    assert choices == [{"name": "Vorstand", "value": str(board.id)}]
+
+    text = _signed(
+        client, _with("beschluss", frage="Neue Tore kaufen?", funktion=str(board.id))
+    ).get_json()["data"]["content"]
+    assert "gestartet" in text
+    poll = db.session.query(Poll).filter_by(question="Neue Tore kaufen?").one()
+    assert [o.label for o in poll.options] == ["Ja", "Nein", "Enthaltung"]
+    assert poll.is_required and poll.required_function_ids == [board.id]
+    if hasattr(poll, "auto_close"):
+        assert poll.auto_close is True
+
+
+def test_groups_command_joins_and_leaves(client, db, tenant, trainer, seeded_db):
+    from hubra.core.models.group import Group
+
+    _conn(db, tenant)
+    choir = Group(name="Chor", visibility="open")
+    db.session.add(choir)
+    db.session.commit()
+    answer = _signed(client, _command("gruppen")).get_json()
+    assert "Chor" in answer["data"]["content"]
+    button = answer["data"]["components"][0]["components"][0]
+    assert button["custom_id"] == f"gjoin:{choir.id}"
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"gjoin:{choir.id}"},
+    }
+    answer = _signed(client, click).get_json()
+    assert answer["type"] == 7 and "jetzt in **Chor**" in answer["data"]["content"]
+    assert seeded_db["admin"] in db.session.get(Group, choir.id).members
+
+
+def test_help_lists_what_the_person_may_do(client, db, tenant, trainer):
+    _conn(db, tenant)
+    text = _signed(client, _command("hilfe")).get_json()["data"]["content"]
+    assert "/anlass" in text and "/gruppen" in text
+    stranger = _signed(client, _command("hilfe", user="999")).get_json()["data"][
+        "content"
+    ]
+    assert "/anlass" not in stranger and "Verknüpfe" in stranger
+
+
+def test_maybe_button(client, db, tenant, trainer, seeded_db):
+    from hubra.api.events.services import EventService
+    from hubra.core.models.event import ClubEvent, EventRegistration
+    from hubra_discord.commands import event_buttons
+
+    if not hasattr(EventService, "maybe"):
+        pytest.skip("Hubra without 'Vielleicht'")
+    _conn(db, tenant)
+    event = ClubEvent(
+        title="Quiz",
+        date=date.today() + timedelta(days=2),
+        type="Social",
+        is_public=True,
+    )
+    db.session.add(event)
+    db.session.commit()
+    labels = [b["label"] for b in event_buttons(event)[0]["components"]]
+    assert labels == ["Anmelden", "Vielleicht", "Abmelden"]
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "42"}},
+        "data": {"custom_id": f"maybe:{event.id}"},
+    }
+    assert "Vielleicht" in _signed(client, click).get_json()["data"]["content"]
+    reg = db.session.query(EventRegistration).filter_by(event_id=event.id).one()
+    assert reg.status == "maybe"
+
+
+# ── Mentioning those who still have to vote (nudge.py) ───────────────────────
+
+
+def test_closing_post_mentions_linked_non_voters(app, db, tenant, trainer, seeded_db):
+    from hubra.core.models.poll import Poll, PollOption
+    from hubra.core.tenant.context import in_club
+    from hubra_discord.nudge import add_mentions
+
+    conn = _conn(db, tenant, nudge_voters=True)
+    with in_club(tenant):
+        poll = Poll(
+            question="Trikots?", is_required=True, required_group_ids=[trainer.id]
+        )
+        poll.options = [PollOption(label="Ja"), PollOption(label="Nein")]
+        db.session.add(poll)
+        db.session.commit()
+        body = add_mentions(
+            conn, poll, {"embeds": [], "allowed_mentions": {"parse": []}}
+        )
+    assert body["content"] == "🗳️ Noch nicht abgestimmt: <@42>"
+    assert body["allowed_mentions"] == {"parse": [], "users": ["42"]}
+
+    conn.config = {**conn.config, "nudge_voters": False}
+    with in_club(tenant):
+        assert "content" not in add_mentions(conn, poll, {"embeds": []})
+
+
+# ── The server from Hubra (server.py, routes) ────────────────────────────────
+
+
+class ChannelServer:
+    """A small Discord server: two categories, channels, one made by Hubra."""
+
+    def __init__(self):
+        self.calls = []
+        self.channels = [
+            {"id": "800", "name": "Info", "type": 4, "position": 0},
+            {
+                "id": CHANNEL,
+                "name": "news",
+                "type": 0,
+                "parent_id": "800",
+                "position": 0,
+            },
+            {"id": "903", "name": "Teams", "type": 4, "position": 1},
+            {
+                "id": "904",
+                "name": "u17",
+                "type": 0,
+                "parent_id": "903",
+                "position": 0,
+                "permission_overwrites": [
+                    {"id": GUILD, "type": 0, "deny": str(1 << 10), "allow": "0"}
+                ],
+            },
+            {
+                "id": "905",
+                "name": "Garderobe",
+                "type": 2,
+                "parent_id": "903",
+                "position": 1,
+            },
+        ]
+
+    def __call__(self, method, path, body=None, **kw):
+        self.calls.append((method, path, body))
+        if path == f"/guilds/{GUILD}/channels" and method == "GET":
+            return self.channels
+        if path == f"/guilds/{GUILD}/channels" and method == "POST":
+            made = {"id": "999", "name": body["name"], "type": body["type"]}
+            self.channels.append(made)
+            return made
+        if path.endswith("/roles"):
+            return [
+                {"id": GUILD, "permissions": str((1 << 10) | (1 << 11) | (1 << 14))},
+                {"id": "950", "permissions": str(1 << 4), "managed": True},
+            ]
+        if path.endswith(f"/members/{APP_ID}"):
+            return {"roles": ["950"]}
+        if path.startswith("/channels/") and method == "GET":
+            cid = path.split("/")[2]
+            found = next((c for c in self.channels if c["id"] == cid), None)
+            return {**found, "guild_id": GUILD} if found else None
+        if path.startswith("/channels/") and method in ("PATCH", "DELETE"):
+            return {"id": path.split("/")[2], **(body or {})}
+        raise AssertionError((method, path))
+
+
+def test_channels_overview(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("announce", "channels"), made_channels=["904"])
+    with patch.object(api, "bot", side_effect=ChannelServer()):
+        data = client.get(
+            f"/api/v1/discord/connections/{conn.id}/channels", headers=H
+        ).get_json()
+    names = [c["name"] for c in data["channels"]]
+    # Discord's order: category, then its text channels, then voice.
+    assert names == ["Info", "news", "Teams", "u17", "Garderobe"]
+    by = {c["name"]: c for c in data["channels"]}
+    assert by["news"]["uses"] == ["Hauptkanal"] and by["news"]["botCanPost"]
+    assert (
+        by["u17"]["private"] and by["u17"]["madeByHubra"] and not by["u17"]["botCanSee"]
+    )
+    assert data["canManage"] is True
+
+
+def test_make_rename_and_delete_a_channel(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("announce", "channels"))
+    server = ChannelServer()
+    base = f"/api/v1/discord/connections/{conn.id}/channels"
+    with patch.object(api, "bot", side_effect=server):
+        resp = client.post(
+            base,
+            json={"name": "Vorstand Intern", "parentId": "903", "private": True},
+            headers=H,
+        )
+        assert resp.status_code == 201, resp.get_json()
+        assert resp.get_json()["name"] == "vorstand-intern"
+        made = [c for c in server.calls if c[0] == "POST"][0][2]
+        assert made["parent_id"] == "903"
+        assert made["permission_overwrites"][0] == {
+            "id": GUILD,
+            "type": 0,
+            "deny": str(1 << 10),
+            "allow": "0",
+        }
+        assert (
+            client.patch(
+                f"{base}/999", json={"name": "Vorstand"}, headers=H
+            ).status_code
+            == 200
+        )
+        assert client.delete(f"{base}/999", headers=H).status_code == 200
+        # People's own channels and the ones Hubra posts in stay.
+        resp = client.delete(f"{base}/905", headers=H)
+        assert (
+            resp.status_code == 409 and "selbst angelegt" in resp.get_json()["message"]
+        )
+    db.session.refresh(conn)
+    assert "999" not in conn.config.get("made_channels", [])
+
+
+def test_channel_changes_need_the_channels_scope(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, scopes=("announce",))
+    with patch.object(api, "bot", side_effect=ChannelServer()):
+        resp = client.post(
+            f"/api/v1/discord/connections/{conn.id}/channels",
+            json={"name": "x"},
+            headers=H,
+        )
+    assert resp.status_code == 409 and "Kanäle" in resp.get_json()["message"]
+
+
+def test_saving_settings_keeps_what_the_bot_remembers(client, db, club_auth, tenant):
+    conn = _conn(db, tenant, posted={"e:1": [[CHANNEL, "5"]]}, made_channels=["904"])
+    with patch.object(api, "bot", side_effect=_server):
+        resp = client.patch(
+            f"/api/v1/apps/connections/{conn.id}",
+            json={"config": {"announce_posts": False}},
+            headers=H,
+        )
+    assert resp.status_code == 200
+    db.session.refresh(conn)
+    assert conn.config["posted"] == {"e:1": [[CHANNEL, "5"]]}
+    assert conn.config["made_channels"] == ["904"]
+
+
+def test_posted_messages_list(client, db, club_auth, tenant):
+    from hubra.core.models.event import ClubEvent
+
+    event = ClubEvent(
+        title="Turnier", date=date.today() + timedelta(days=9), type="Social"
+    )
+    db.session.add(event)
+    db.session.commit()
+    conn = _conn(
+        db,
+        tenant,
+        posted={f"e:{event.id}": [[CHANNEL, "77"]], "p:9999": [[CHANNEL, "78"]]},
+    )
+    data = client.get(
+        f"/api/v1/discord/connections/{conn.id}/messages", headers=H
+    ).get_json()
+    first, second = data["messages"]
+    assert first["title"] == "(gelöschte Umfrage)" and not first["exists"]
+    assert second["title"] == "Turnier"
+    assert (
+        second["messages"][0]["url"]
+        == f"https://discord.com/channels/{GUILD}/{CHANNEL}/77"
+    )
+    resp = client.delete(
+        f"/api/v1/discord/connections/{conn.id}/messages/p:9999", headers=H
+    )
+    assert resp.status_code == 200
+    db.session.refresh(conn)
+    assert "p:9999" not in conn.config["posted"]
+
+
+def test_server_api_needs_the_right(client, db, tenant):
+    conn = _conn(db, tenant)
+    assert client.get(
+        f"/api/v1/discord/connections/{conn.id}/channels", headers=H
+    ).status_code in (401, 403)

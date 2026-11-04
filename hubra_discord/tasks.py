@@ -418,8 +418,12 @@ def refresh_event(self, connection_id: int, event_id: int, deleted: bool = False
     from . import live
 
     return _live_task(
-        self, connection_id, "Updating an event message", live.refresh_event,
-        event_id, deleted,
+        self,
+        connection_id,
+        "Updating an event message",
+        live.refresh_event,
+        event_id,
+        deleted,
     )
 
 

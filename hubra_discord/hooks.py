@@ -80,7 +80,13 @@ SWITCH_NAMES = {
 
 
 def _announce(
-    tenant_id, kind: str, toggle: str, build, what: str = "", ref: str | None = None
+    tenant_id,
+    kind: str,
+    toggle: str,
+    build,
+    what: str = "",
+    ref: str | None = None,
+    extra=None,
 ) -> None:
     from .app import channel_for
     from .tasks import send_announcement
@@ -108,11 +114,13 @@ def _announce(
             continue
         item, components = built if isinstance(built, tuple) else (built, None)
         body = payload(config.get("mention"), [item], components)
+        if extra is not None:
+            body = extra(conn, body)
         after_commit(send_announcement.delay, conn.id, body, kind, ref)
 
 
 def _to_groups(
-    tenant_id, group_ids, build, what: str = "", ref: str | None = None
+    tenant_id, group_ids, build, what: str = "", ref: str | None = None, extra=None
 ) -> None:
     """Post in the private channels of these groups (``channels`` scope)."""
     from .groups import channel_for_group
@@ -131,6 +139,8 @@ def _to_groups(
                 continue
             item, components = build(conn)
             body = payload(None, [item], components)
+            if extra is not None:
+                body = extra(conn, body)
             after_commit(send_to_group_channel.delay, conn.id, int(gid), body, ref)
 
 
@@ -326,16 +336,22 @@ def on_event_reminder(tenant_id=None, event_id=None, **_):
 def on_poll_closing(tenant_id=None, poll_id=None, **_):
     from hubra.core.models.poll import Poll
 
+    from .nudge import add_mentions
+
     poll = db.session.get(Poll, poll_id)
     if poll is None:
         return
+    nudge = (lambda c, body: add_mentions(c, poll, body)) if poll.is_required else None
     if poll.required_group_ids or poll.required_function_ids:
         _to_groups(
             tenant_id,
             poll.required_group_ids,
             lambda c: (poll_closing_embed(poll), _poll_buttons(c, poll)),
             f'Poll closing "{poll.question}"',
+            extra=nudge,
         )
+        # Polls for some groups or functions stay out of the shared
+        # channels (a board's question isn't for everyone).
         return
     _announce(
         tenant_id,
@@ -343,6 +359,7 @@ def on_poll_closing(tenant_id=None, poll_id=None, **_):
         "announce_reminders",
         lambda c: (poll_closing_embed(poll), _poll_buttons(c, poll)),
         f'Poll closing "{poll.question}"',
+        extra=nudge,
     )
 
 

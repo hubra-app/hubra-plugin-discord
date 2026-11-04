@@ -64,9 +64,10 @@ COMMANDS = [
 
 
 def all_commands() -> list[dict]:
+    from .create import COMMANDS as CREATE
     from .personal import COMMANDS as PERSONAL
 
-    return COMMANDS + PERSONAL
+    return COMMANDS + PERSONAL + CREATE
 
 
 def register() -> None:
@@ -149,7 +150,20 @@ def handle(conn, interaction: dict) -> dict:
             return _status(conn, member)
         if name in ("rechnungen", "trainings", "profil"):
             return _personal(conn, member, name)
+        from . import create
+
+        if name in create.NAMES:
+            if name != "hilfe" and not apps.has_scope(conn, "commands"):
+                return reply("Befehle sind für diesen Verein ausgeschaltet.")
+            return create.handle(conn, member, name, data)
         return reply("Unbekannter Befehl.")
+
+    if kind == 4:  # autocomplete while typing an option
+        from .create import autocomplete
+
+        if data.get("name") == "beschluss" and member is not None:
+            return autocomplete(conn, data)
+        return {"type": 8, "data": {"choices": []}}
 
     if kind == 3:
         if not apps.has_scope(conn, "commands"):
@@ -158,6 +172,12 @@ def handle(conn, interaction: dict) -> dict:
         action, _, raw = custom_id.partition(":")
         if action in ("register", "unregister") and raw.isdigit():
             return _registration(conn, member, int(raw), action == "register")
+        if action == "maybe" and raw.isdigit():
+            return _maybe(conn, member, int(raw))
+        if action in ("gjoin", "gleave"):
+            from .create import group_button
+
+            return group_button(conn, member, custom_id)
         if action == "vote":
             from .polls import handle as vote
 
@@ -274,23 +294,59 @@ def _registration(conn, member, event_id: int, register: bool) -> dict:
     return reply(text)
 
 
+def _has_maybe() -> bool:
+    from hubra.api.events.services import EventService
+
+    return hasattr(EventService, "maybe")  # Hubra with "Vielleicht"
+
+
+def _maybe(conn, member, event_id: int) -> dict:
+    from hubra.api.events.services import EventService
+    from hubra.core.models.event import ClubEvent
+
+    if member is None:
+        return reply(_link_hint())
+    if not _may(member, "events.events.register"):
+        return reply("Du darfst dich nicht selbst für Anlässe anmelden.")
+    event = db.session.get(ClubEvent, event_id)
+    if event is None or not _has_maybe():
+        return reply("Diesen Anlass gibt es nicht mehr.")
+    try:
+        EventService.maybe(event_id, member.id, own=True)
+        db.session.commit()
+        text = f"🤔 Vielleicht für **{event.title}**. Es ist kein Platz für dich reserviert; «Anmelden» macht es fix."
+    except ApiError as exc:
+        db.session.rollback()
+        text = {
+            "REGISTRATION_CLOSED": "Die Anmeldung ist geschlossen.",
+            "CANCELLATION_CLOSED": "Die Abmeldefrist ist vorbei; dein Platz bleibt.",
+        }.get(exc.code, exc.message)
+    botlog.log(conn, "registration", True, f"{member.name}: vielleicht · {event.title}")
+    db.session.commit()
+    return reply(text)
+
+
 def event_buttons(event) -> list[dict]:
-    return [
+    buttons = [
         {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2,
-                    "style": 1,
-                    "label": "Anmelden",
-                    "custom_id": f"register:{event.id}",
-                },
-                {
-                    "type": 2,
-                    "style": 2,
-                    "label": "Abmelden",
-                    "custom_id": f"unregister:{event.id}",
-                },
-            ],
-        }
+            "type": 2,
+            "style": 1,
+            "label": "Anmelden",
+            "custom_id": f"register:{event.id}",
+        },
+        {
+            "type": 2,
+            "style": 2,
+            "label": "Vielleicht",
+            "custom_id": f"maybe:{event.id}",
+        },
+        {
+            "type": 2,
+            "style": 2,
+            "label": "Abmelden",
+            "custom_id": f"unregister:{event.id}",
+        },
     ]
+    if not _has_maybe():
+        buttons.pop(1)
+    return [{"type": 1, "components": buttons}]

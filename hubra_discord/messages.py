@@ -111,18 +111,25 @@ def _when(event) -> str:
 
 
 def _places(event) -> str:
-    try:
-        from hubra.api.events.services import EventService
+    from hubra.api.events.services import EventService
 
+    try:
         taken = EventService.places_taken(event.id)
     except Exception:  # noqa: BLE001
         taken = len(event.attendees or [])
+    try:
+        maybe = EventService.maybe_count(event.id)
+    except Exception:  # noqa: BLE001  Hubra before "Vielleicht"
+        maybe = 0
+    extra = f" · {maybe} vielleicht" if maybe else ""
     if event.max_attendees:
         free = max(event.max_attendees - taken, 0)
         if free == 0:
-            return f"{taken} / {event.max_attendees} · ausgebucht (Warteliste)"
-        return f"{taken} / {event.max_attendees} · {free} frei"
-    return f"{taken} angemeldet" if taken else "Noch niemand angemeldet"
+            return f"{taken} / {event.max_attendees} · ausgebucht (Warteliste){extra}"
+        return f"{taken} / {event.max_attendees} · {free} frei{extra}"
+    if taken:
+        return f"{taken} angemeldet{extra}"
+    return f"Noch niemand angemeldet{extra}"
 
 
 def event_embed(event, *, state: str = "open") -> dict[str, Any]:
@@ -220,6 +227,16 @@ def poll_closing_embed(poll) -> dict[str, Any]:
     fields = []
     if poll.closes_at:
         fields.append(("⏳ Schliesst", stamp(poll.closes_at, "R")))
+    if poll.is_required:
+        try:
+            from hubra.api.polls.services import PollService
+
+            required = len(PollService.get_required_members(poll))
+            if required:
+                done = len({v.member_id for v in poll.votes or []})
+                fields.append(("🗳️ Abgestimmt", f"{min(done, required)} von {required}"))
+        except Exception:  # noqa: BLE001
+            pass
     return embed(
         f"⏳ Schliesst bald: {poll.question}",
         "Noch nicht abgestimmt? Jetzt abstimmen.",
