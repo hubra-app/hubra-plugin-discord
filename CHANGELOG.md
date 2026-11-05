@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.7.1
+
+- Release on a pushed v* tag (works with immutable releases) (#13)
+
 ## 2.7.0
 
 - **Training cards.** Before a training of a group with its own channel, the
