@@ -3,13 +3,20 @@ name: Test and release
 # Every push and pull request runs the plugin's tests and type check against
 # Hubra's main.
 #
-# Publish a release whose tag matches plugin.yaml (v1.3.0 for version 1.3.0),
-# in the web UI or with `gh release create v1.3.0 --target main --notes ""`,
-# and the plugin is signed and attached to it as <id>-<version>.zip. Files
-# listed in .releaseignore stay out of the zip. The release description gets
-# that version's CHANGELOG.md section (below anything you wrote) and the
-# zip's SHA-256, which is also attached as <id>-<version>.zip.sha256. The
-# Marketplace (hubra-app/hubra-plugins) picks the release up.
+# Push a tag that matches plugin.yaml (v1.3.0 for version 1.3.0) and the
+# plugin is tested, signed and published as a GitHub release with
+# <id>-<version>.zip and <id>-<version>.zip.sha256 attached:
+#
+#     git tag v1.3.0 && git push origin v1.3.0
+#
+# The release is created only once everything is ready, so it works with
+# immutable releases (Settings > General > Releases), which keep a published
+# zip from ever being swapped. Its description is that version's CHANGELOG.md
+# section and the zip's SHA-256. A draft release you made for the tag in
+# advance is filled and published instead, keeping what you wrote in it. A
+# release that is already published is never touched: tag a new version.
+# Files listed in .releaseignore stay out of the zip. The Marketplace
+# (hubra-app/hubra-plugins) picks the release up.
 #
 # The signing key is the most sensitive secret here: anything it signs
 # installs as "official" on every Hubra server. So only the sign job sees it,
@@ -17,9 +24,9 @@ name: Test and release
 # third-party action, only the plugin from git, Hubra's backend and its
 # locked Python packages. From the jobs before it, it takes just the built
 # frontend (frontend/dist).
-#   test     no signing key: tests, type check, and on a release the frontend build
+#   test     no signing key: tests, type check, and on a tag the frontend build
 #   sign     environment "plugin-signing": signs and packs
-#   release  contents: write, no signing key: attaches the zip
+#   release  contents: write, no signing key: publishes the release with the zip
 #
 # Secrets:
 #   HUBRA_SIGNING_KEY   an environment secret of "plugin-signing" in this
@@ -32,11 +39,10 @@ name: Test and release
 #   MARKETPLACE_TOKEN   optional: Actions write on the Marketplace repository,
 #                       so it publishes right away instead of within the hour
 on:
-  release:
-    types: [published]
-  pull_request:
   push:
     branches: [main]
+    tags: ["v*"]
+  pull_request:
 
 permissions:
   contents: read
@@ -54,7 +60,7 @@ jobs:
       - name: Check the tag against plugin.yaml
         id: manifest
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           python3 - <<'PY'
           import os, re
@@ -94,17 +100,26 @@ jobs:
           ID: ${{ steps.manifest.outputs.id }}
         run: |
           rm -rf "../../plugins/$ID" && cp -r "$GITHUB_WORKSPACE/plugin" "../../plugins/$ID"
+          # Plugins it builds on (requires: or depends: naming another
+          # official plugin, e.g. inventory) are tested with it, from main.
+          deps=$(python -c 'import sys, yaml; m = yaml.safe_load(open(sys.argv[1])); print(*(m.get("requires") or []), *(m.get("depends") or {}))' "../../plugins/$ID/plugin.yaml")
+          for dep in $deps; do
+            if [ "$dep" != "$ID" ] && [ ! -d "../../plugins/$dep" ]; then
+              GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "https://github.com/hubra-app/hubra-plugin-$dep" "../../plugins/$dep" 2>/dev/null \
+                && echo "Testing with the $dep plugin" || true
+            fi
+          done
           (cd ../frontend && npm run typecheck:plugins)
           if [ -d "../../plugins/$ID/tests" ]; then pytest -q "../../plugins/$ID"; fi
 
       - name: Build the frontend
-        if: github.event_name == 'release'
+        if: github.ref_type == 'tag'
         working-directory: hubra/app/frontend
         env:
           ID: ${{ steps.manifest.outputs.id }}
         run: npm run build:plugin -- "../../plugins/$ID"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'release'
+        if: github.ref_type == 'tag'
         with:
           name: frontend
           path: hubra/plugins/${{ steps.manifest.outputs.id }}/frontend/dist/
@@ -113,7 +128,7 @@ jobs:
 
   sign:
     needs: test
-    if: github.event_name == 'release'
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     environment: plugin-signing
     steps:
@@ -184,7 +199,7 @@ jobs:
     env:
       ID: ${{ needs.test.outputs.id }}
       VER: ${{ needs.test.outputs.version }}
-      TAG: ${{ github.event.release.tag_name }}
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -195,8 +210,12 @@ jobs:
           name: signed
       - name: Release notes from CHANGELOG.md
         env:
-          BODY: ${{ github.event.release.body }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # What a draft release made for this tag already says stays on top.
+          BODY=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,body \
+                 -q 'select(.isDraft) | .body' 2>/dev/null || true)
+          export BODY
           python3 - <<'PY'
           import os, re
           v = os.environ["VER"]
@@ -213,12 +232,25 @@ jobs:
         run: |
           sha256sum "$ID-$VER.zip" > "$ID-$VER.zip.sha256"
           printf '\n\nSHA-256 of `%s`: `%s`\n' "$ID-$VER.zip" "$(cut -d' ' -f1 "$ID-$VER.zip.sha256")" >> notes.md
-      - name: Attach the signed plugin to the release
+      - name: Publish the release with the signed plugin
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$TAG" "$ID-$VER.zip" "$ID-$VER.zip.sha256" --clobber --repo "$GITHUB_REPOSITORY"
-          gh release edit "$TAG" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+          # An immutable release takes no files once published, so it is
+          # published complete: created with the zip, or a draft filled first.
+          files=("$ID-$VER.zip" "$ID-$VER.zip.sha256")
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo none)
+          case "$draft" in
+            none)
+              gh release create "$TAG" "${files[@]}" --verify-tag --title "$TAG" \
+                --notes-file notes.md --repo "$GITHUB_REPOSITORY" ;;
+            true)
+              gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+              gh release edit "$TAG" --notes-file notes.md --draft=false --repo "$GITHUB_REPOSITORY" ;;
+            *)
+              echo "::error::release $TAG is already published; bump the version and push a new tag"
+              exit 1 ;;
+          esac
       - name: Tell the Marketplace
         env:
           GH_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
