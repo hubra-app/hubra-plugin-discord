@@ -9,14 +9,13 @@ buttons, `/rechnungen`, `/trainings` (with check-in) and `/profil`, notification
 want them, a welcome message for new people on the server, and (opt-in) Hubra's own release and maintenance notices.
 On the platform's own server it hands clicks and commands to Hubra's platform bot (club requests, alerts, `/plattform`, `/wartung`).
 
-**Version** 2.3.0 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`
+**Version** 2.7.1 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`
 
 ## Install
 
-Platform admins install it from the plugin catalogue in the manager portal
+Platform admins install it from the Plugin catalogue in manage
 (official Marketplace, <https://plugins.hubra.club/index.json>, signed with
-the Hubra project key). Clubs then switch it on under Einstellungen → Module
-& Plugins and connect their server under Einstellungen → Verbundene Apps.
+the Hubra project key). Clubs then switch it on under Einstellungen → Module and connect their server under Einstellungen → Verbundene Apps.
 
 The bot is one Discord application for the whole platform; its keys are
 platform settings (manage › Platform settings › Discord), stored encrypted. Setup steps are in Hubra's
