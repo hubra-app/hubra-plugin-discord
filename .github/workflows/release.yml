@@ -100,6 +100,15 @@ jobs:
           ID: ${{ steps.manifest.outputs.id }}
         run: |
           rm -rf "../../plugins/$ID" && cp -r "$GITHUB_WORKSPACE/plugin" "../../plugins/$ID"
+          # Plugins it builds on (requires: or depends: naming another
+          # official plugin, e.g. inventory) are tested with it, from main.
+          deps=$(python -c 'import sys, yaml; m = yaml.safe_load(open(sys.argv[1])); print(*(m.get("requires") or []), *(m.get("depends") or {}))' "../../plugins/$ID/plugin.yaml")
+          for dep in $deps; do
+            if [ "$dep" != "$ID" ] && [ ! -d "../../plugins/$dep" ]; then
+              GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "https://github.com/hubra-app/hubra-plugin-$dep" "../../plugins/$dep" 2>/dev/null \
+                && echo "Testing with the $dep plugin" || true
+            fi
+          done
           (cd ../frontend && npm run typecheck:plugins)
           if [ -d "../../plugins/$ID/tests" ]; then pytest -q "../../plugins/$ID"; fi
 
