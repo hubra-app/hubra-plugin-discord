@@ -52,8 +52,6 @@
       "welcomeText": "Welcome text",
       "welcomeTextHint": "Leave empty for the default text. {club} becomes the club's name, {link} the link to link up.",
       "welcomeDefault": "The default (German): Willkommen auf dem Discord-Server von {club}! 👋 Bist du Mitglied? Verknüpfe dein Discord-Konto mit Hubra …",
-      "hubraNews": "Announce new Hubra versions",
-      "hubraNewsHint": "In the main channel, with the main changes.",
       "maintenanceNotices": "Announce maintenance",
       "maintenanceNoticesHint": "In the main channel: planned maintenance, start and end. Hubra is briefly unavailable then.",
       "groupRoles": "A role for every group",
@@ -248,7 +246,10 @@
       "statsPreview": "Last week, as posted on Monday",
       "feedbackTitle": "Feedback after events",
       "feedbackNone": "None yet. They appear here after the next event.",
-      "feedbackCount": "{{n}} answers"
+      "feedbackCount": "{{n}} answers",
+      "changelog": "Changelog: new Hubra versions (e.g. an announcements or a dedicated changelog channel)",
+      "pluginNews": "Changelog: plugin updates",
+      "pluginNewsHint": "New versions of the plugins your club uses, with their changelog. In the same channel as the Hubra versions."
     }
   },
   "de-CH": {
@@ -304,8 +305,6 @@
       "welcomeText": "Begrüssungstext",
       "welcomeTextHint": "Leer lassen für den Standardtext. {club} wird zum Vereinsnamen, {link} zum Link fürs Verknüpfen.",
       "welcomeDefault": "Willkommen auf dem Discord-Server von {club}! 👋 Bist du Mitglied? Verknüpfe dein Discord-Konto mit Hubra, dann bekommst du deine Rollen und Kanäle automatisch: {link}",
-      "hubraNews": "Neue Hubra-Versionen ankündigen",
-      "hubraNewsHint": "Im Hauptkanal, mit den wichtigsten Neuerungen.",
       "maintenanceNotices": "Wartungen ankündigen",
       "maintenanceNoticesHint": "Im Hauptkanal: geplante Wartung, Beginn und Ende. Hubra ist dann kurz nicht erreichbar.",
       "groupRoles": "Rolle für jede Gruppe",
@@ -500,7 +499,10 @@
       "statsPreview": "Letzte Woche, wie am Montag gepostet",
       "feedbackTitle": "Rückmeldungen nach Anlässen",
       "feedbackNone": "Noch keine. Sie erscheinen hier nach dem nächsten Anlass.",
-      "feedbackCount": "{{n}} Antworten"
+      "feedbackCount": "{{n}} Antworten",
+      "changelog": "Changelog: neue Hubra-Versionen (z. B. Ankündigungs- oder eigener Changelog-Kanal)",
+      "pluginNews": "Changelog: Plugin-Updates",
+      "pluginNewsHint": "Neue Versionen der Plugins, die der Verein nutzt, mit ihrem Changelog. Im selben Kanal wie die Hubra-Versionen."
     }
   }
 }

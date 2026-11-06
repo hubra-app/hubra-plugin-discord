@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Changelogs on the club's server.** New Hubra versions and updates of the
+  plugins the club uses are posted with their changelog section, once per
+  version. Settings › Verbundene Apps › Discord › Ankündigungen:
+  "Changelog: neue Hubra-Versionen" (with its own channel picker, e.g. an
+  announcements or a dedicated changelog channel; empty = main channel) and
+  "Changelog: Plugin-Updates" (same channel). Both off by default. Needs a
+  Hubra that sends `hubra.released` / `plugin.released` (hubra-app/hubra,
+  services.changelogs); with an older one, "new Hubra versions" still comes
+  through the old notice, now in the changelog channel.
+- Never twice: the outbox delivery id and the version are noted per server
+  with the delivery, and each post carries a Discord nonce from the
+  delivery id.
+
 ## 2.8.0
 
 - **Richer direct messages.** Each notification shows the sign of its topic

@@ -312,6 +312,30 @@ def test_channel_per_kind_is_checked_against_the_server(client, db, club_auth, t
     assert good.get_json()["config"]["channels"] == {"reminders": CHANNEL}
 
 
+def test_a_club_picks_the_changelog_channel_and_opts_in(client, db, club_auth, tenant):
+    conn = _conn(db, tenant)
+    url = f"/api/v1/apps/connections/{conn.id}"
+    with patch.object(api, "bot", side_effect=_server):
+        resp = client.patch(
+            url,
+            json={
+                "config": {
+                    "channels": {"changelog": CHANNEL},
+                    "hubra_news": True,
+                    "plugin_news": True,
+                }
+            },
+            headers=H,
+        )
+    assert resp.status_code == 200, resp.get_json()
+    config = resp.get_json()["config"]
+    assert config["channels"] == {"changelog": CHANNEL}
+    assert config["hubra_news"] is True and config["plugin_news"] is True
+    with patch.object(api, "bot", side_effect=_server):
+        off = client.patch(url, json={"config": {"plugin_news": False}}, headers=H)
+    assert off.get_json()["config"]["plugin_news"] is False
+
+
 # ── Announcements ────────────────────────────────────────────────────────────
 
 
@@ -1840,6 +1864,7 @@ def test_hubra_notices_only_when_the_club_wants_them(app, db, tenant, queued):
         off.config = {**off.config, "hubra_news": True}
         db.session.commit()
         assert platform_notice(off, "release", {"version": "1.2.3"}) is True
+        assert platform_notice(off, "release", {"version": "1.2.3"}) is False
         # Maintenance has its own switch.
         assert platform_notice(off, "maintenance_started", {}) is False
         assert platform_notice(off, "something_else", {}) is False
@@ -1849,7 +1874,8 @@ def test_hubra_notices_only_when_the_club_wants_them(app, db, tenant, queued):
         )
     queued.assert_called_once()
     conn_id, body, kind = queued.call_args.args[:3]
-    assert conn_id == off.id and kind == "hubra"
+    # An older Hubra's release notice goes where the changelog goes, once.
+    assert conn_id == off.id and kind == "changelog"
     assert body["embeds"][0]["title"] == "Hubra 1.2.3"
     assert body["allowed_mentions"] == {"parse": []}
     assert "05.11.2030 22:00" in embed["description"]
@@ -1859,9 +1885,150 @@ def test_hubra_notices_only_when_the_club_wants_them(app, db, tenant, queued):
 def test_platform_notice_toggles_are_saved(app, db, tenant):
     from hubra_discord.app import BOOLS, DEFAULT_CONFIG
 
-    for key in ("hubra_news", "maintenance_notices"):
+    for key in ("hubra_news", "plugin_news", "maintenance_notices"):
         assert key in BOOLS
         assert DEFAULT_CONFIG[key] is False
+
+
+# ── Changelogs: new Hubra and plugin versions ────────────────────────────────
+
+HUBRA_RELEASE = {
+    "version": "1.2.3",
+    "date": "2026-11-06",
+    "sections": {"Added": ["Changelogs on Discord"], "Fixed": ["A bug"]},
+    "sections_de": {"Added": ["Changelogs auf Discord"], "Fixed": ["Ein Fehler"]},
+}
+PLUGIN_RELEASE = {
+    "plugin_id": "inventory",
+    "name": "Inventory",
+    "version": "2.1.0",
+    "previous_version": "2.0.0",
+    "notes": "### Added\n\n- Barcodes",
+}
+
+
+def _released(tenant, event: str, data: dict):
+    """Send *event* in the club the way Hubra does: through the outbox."""
+    from hubra.core.extensions import db
+    from hubra.core.modules.events import emit
+
+    called = emit(event, tenant_id=tenant.id, **data)
+    db.session.commit()  # the outbox delivers after the commit
+    return called
+
+
+def test_changelogs_are_off_by_default(app, db, tenant, queued):
+    conn = _conn(db, tenant, scopes=("announce",))
+    assert _released(tenant, "hubra.released", HUBRA_RELEASE) == ["discord"]
+    _released(tenant, "plugin.released", PLUGIN_RELEASE)
+    queued.assert_not_called()
+    db.session.refresh(conn)
+    assert not conn.config.get("changelog_sent")
+    skipped = db.session.query(ConnectedAppEvent).filter_by(action="skipped").all()
+    assert any("Changelog: neue Hubra-Versionen" in e.detail for e in skipped)
+
+
+def test_a_new_hubra_version_is_posted_once_when_the_club_opted_in(
+    app, db, tenant, queued
+):
+    from hubra.core.models.contract_outbox import ContractMessage
+
+    conn = _conn(db, tenant, scopes=("announce",), hubra_news=True)
+    _released(tenant, "hubra.released", HUBRA_RELEASE)
+    queued.assert_called_once()
+    conn_id, body, kind = queued.call_args.args[:3]
+    assert conn_id == conn.id and kind == "changelog"
+    embed = body["embeds"][0]
+    assert embed["title"] == "Hubra 1.2.3"
+    # The whole section, in the club's language (German here).
+    assert "Changelogs auf Discord" in embed["description"]
+    assert "Ein Fehler" in embed["description"]
+    assert body["allowed_mentions"] == {"parse": []}
+    # Discord drops a second post with the same nonce.
+    assert body["enforce_nonce"] is True and 0 < len(body["nonce"]) <= 25
+    delivery = db.session.query(ContractMessage).filter_by(name="hubra.released").one()
+    assert delivery.status == "done"
+    db.session.refresh(conn)
+    assert delivery.message_id in conn.config["changelog_sent"]
+    assert "hubra@1.2.3" in conn.config["changelog_sent"]
+
+    # The same version again, or the same delivery retried: nothing.
+    _released(tenant, "hubra.released", HUBRA_RELEASE)
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.hooks import on_hubra_released
+
+    with in_club(tenant):
+        on_hubra_released(
+            tenant_id=tenant.id, event_id=delivery.message_id, **HUBRA_RELEASE
+        )
+        db.session.commit()
+    queued.assert_called_once()
+
+    # A newer version is posted.
+    _released(tenant, "hubra.released", {**HUBRA_RELEASE, "version": "1.3.0"})
+    assert queued.call_count == 2
+
+
+def test_the_same_delivery_always_gets_the_same_nonce():
+    from hubra_discord import changelog
+
+    one = changelog.nonce("d-1", 7, "hubra@1.2.3")
+    assert one == changelog.nonce("d-1", 7, "hubra@1.2.3")
+    assert one != changelog.nonce("d-1", 8, "hubra@1.2.3")  # another server
+    assert one != changelog.nonce("d-2", 7, "hubra@1.2.3")
+
+
+def test_plugin_updates_have_their_own_switch(app, db, tenant, queued):
+    conn = _conn(db, tenant, scopes=("announce",), hubra_news=True)
+    _released(tenant, "plugin.released", PLUGIN_RELEASE)
+    queued.assert_not_called()  # Hubra's switch doesn't cover plugins
+
+    conn.config = {**conn.config, "plugin_news": True}
+    db.session.commit()
+    _released(tenant, "plugin.released", PLUGIN_RELEASE)
+    queued.assert_called_once()
+    embed = queued.call_args.args[1]["embeds"][0]
+    assert embed["title"] == "Inventory 2.1.0"
+    assert "2.0.0 → 2.1.0" in embed["description"]
+    assert "Barcodes" in embed["description"]
+    _released(tenant, "plugin.released", PLUGIN_RELEASE)  # again: nothing
+    queued.assert_called_once()
+
+
+def test_no_changelog_without_the_announce_scope(app, db, tenant, queued):
+    _conn(db, tenant, scopes=("roles",), hubra_news=True, plugin_news=True)
+    _released(tenant, "hubra.released", HUBRA_RELEASE)
+    queued.assert_not_called()
+
+
+def test_the_changelog_goes_to_its_own_channel_or_the_main_one(app, db, tenant):
+    from hubra_discord.tasks import send_announcement
+
+    conn = _conn(db, tenant, channels={"changelog": "906"})
+    body = payload("", [{"title": "Hubra 1.2.3"}])
+    body.update(nonce="abc", enforce_nonce=True)
+    with patch.object(api, "bot") as bot:
+        send_announcement.run(conn.id, body, "changelog")
+        conn.config = {**conn.config, "channels": {}}
+        db.session.commit()
+        send_announcement.run(conn.id, body, "changelog")
+    assert [c.args[1] for c in bot.call_args_list] == [
+        "/channels/906/messages",
+        f"/channels/{CHANNEL}/messages",
+    ]
+    assert bot.call_args.args[2]["nonce"] == "abc"
+
+
+def test_a_long_changelog_is_cut_to_fit_discord(app, tenant):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord import changelog
+
+    with in_club(tenant):
+        embed = changelog.plugin_embed({**PLUGIN_RELEASE, "notes": "x" * 9000})
+    assert len(embed["description"]) <= changelog.MAX_TEXT
+    assert embed["description"].endswith("Neuigkeiten")
 
 
 # ── Automatic group roles ─────────────────────────────────────────────────────

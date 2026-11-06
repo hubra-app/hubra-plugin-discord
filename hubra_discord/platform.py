@@ -2,9 +2,9 @@
 
 Core's platform bot (``hubra.core.services.platform_bot``) hands every
 connected club server the notice; this posts it to the main channel when
-the club turned it on (Settings › Verbundene Apps › Discord: "Hubra news"
-for releases, "Maintenance notices" for maintenance). Both are off by
-default.
+the club turned it on (Settings › Verbundene Apps › Discord: "Maintenance
+notices", off by default). New versions come as the ``hubra.released``
+event now (changelog.py); ``release`` here is for older Hubra versions.
 """
 
 from __future__ import annotations
@@ -135,18 +135,38 @@ def notice_embed(kind: str, data: dict) -> dict[str, Any] | None:
 
 def platform_notice(conn, kind: str, data: dict) -> bool:
     """Queue *kind* for this server's main channel if the club wants it.
-    Called inside the club. True when queued."""
+    Called inside the club. True when queued.
+
+    ``release`` comes only from a Hubra without the ``hubra.released`` event
+    (changelog.py); it goes to the changelog channel like that event, once
+    per version."""
+    from hubra.core.extensions import db
+
+    from . import changelog
+    from .app import channel_for
     from .messages import payload
     from .tasks import send_announcement
 
     toggle = TOGGLES.get(kind)
     config = conn.config or {}
-    if not toggle or not config.get(toggle) or not config.get("channel_id"):
+    where = "changelog" if kind == "release" else "hubra"
+    channel = (
+        channel_for(config, "changelog")
+        if kind == "release"
+        else config.get("channel_id")
+    )
+    if not toggle or not config.get(toggle) or not channel:
         return False
     if not apps.has_scope(conn, "announce"):
         return False
     embed = notice_embed(kind, data or {})
     if embed is None:
         return False
-    send_announcement.delay(conn.id, payload(None, [embed]), "hubra")
+    if kind == "release":
+        done = changelog.mark("hubra", str((data or {}).get("version") or ""))
+        if changelog.seen(conn, done):
+            return False
+        changelog.remember(conn, done)
+        db.session.commit()
+    send_announcement.delay(conn.id, payload(None, [embed]), where)
     return True

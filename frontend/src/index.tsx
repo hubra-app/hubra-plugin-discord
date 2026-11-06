@@ -75,7 +75,7 @@ interface RoleMapping {
   role_id: string
 }
 
-type Kind = 'events' | 'posts' | 'polls' | 'reminders' | 'public_events'
+type Kind = 'events' | 'posts' | 'polls' | 'reminders' | 'public_events' | 'changelog'
 
 interface DiscordConfig {
   channel_id: string | null
@@ -97,6 +97,7 @@ interface DiscordConfig {
   welcome_text: string
   self_checkin: boolean
   hubra_news: boolean
+  plugin_news: boolean
   maintenance_notices: boolean
   group_roles: boolean
   log_channel_id: string | null
@@ -121,7 +122,12 @@ const MAX_WELCOME = 1500
 
 const KINDS: {
   kind: Kind
-  toggle: 'announce_events' | 'announce_posts' | 'announce_polls' | 'announce_reminders'
+  toggle:
+    | 'announce_events'
+    | 'announce_posts'
+    | 'announce_polls'
+    | 'announce_reminders'
+    | 'hubra_news'
   labelKey: string
   label: string
 }[] = [
@@ -139,6 +145,12 @@ const KINDS: {
     toggle: 'announce_reminders',
     labelKey: 'discord.reminders',
     label: 'Erinnerungen (Anlass steht bevor, Umfrage schliesst bald)',
+  },
+  {
+    kind: 'changelog',
+    toggle: 'hubra_news',
+    labelKey: 'discord.changelog',
+    label: 'Changelog: neue Hubra-Versionen (z. B. Ankündigungs- oder eigener Changelog-Kanal)',
   },
 ]
 
@@ -164,6 +176,7 @@ function readConfig(c: Connection): DiscordConfig {
     welcome_text: raw.welcome_text ?? '',
     self_checkin: raw.self_checkin ?? true,
     hubra_news: raw.hubra_news ?? false,
+    plugin_news: raw.plugin_news ?? false,
     maintenance_notices: raw.maintenance_notices ?? false,
     group_roles: raw.group_roles ?? false,
     log_channel_id: raw.log_channel_id ?? null,
@@ -271,6 +284,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
           members_only_events: config.members_only_events,
           mention: config.mention,
           hubra_news: config.hubra_news,
+          plugin_news: config.plugin_news,
           maintenance_notices: config.maintenance_notices,
           nudge_voters: config.nudge_voters,
           weekly_events: config.weekly_events,
@@ -447,7 +461,7 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                             else delete channels[kind]
                             set({ channels })
                           }}
-                          disabled={!config[toggle]}
+                          disabled={!config[toggle] && !(kind === 'changelog' && config.plugin_news)}
                           searchable
                           clearable
                         />
@@ -463,13 +477,13 @@ function DiscordSettings({ connection, onChange }: SlotProps['apps.connection'])
                       onChange={(e) => set({ members_only_events: e.currentTarget.checked })}
                     />
                     <Switch
-                      label={t('discord.hubraNews', 'Neue Hubra-Versionen ankündigen')}
+                      label={t('discord.pluginNews', 'Changelog: Plugin-Updates')}
                       description={t(
-                        'discord.hubraNewsHint',
-                        'Im Hauptkanal, mit den wichtigsten Neuerungen.',
+                        'discord.pluginNewsHint',
+                        'Neue Versionen der Plugins, die der Verein nutzt, mit ihrem Changelog. Im selben Kanal wie die Hubra-Versionen.',
                       )}
-                      checked={config.hubra_news}
-                      onChange={(e) => set({ hubra_news: e.currentTarget.checked })}
+                      checked={config.plugin_news}
+                      onChange={(e) => set({ plugin_news: e.currentTarget.checked })}
                     />
                     <Switch
                       label={t('discord.maintenanceNotices', 'Wartungen ankündigen')}
