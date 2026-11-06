@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.8.0
+
+- **Richer direct messages.** Each notification shows the sign of its topic
+  (✅ sign-up, 🎟️ waitlist, 💳 invoice, 🔁 membership, 🎓 qualification,
+  📨 answer to a request, 🗓️ weekly overview), warnings in orange, and the
+  fields a notification carries: the weekly overview comes as one message
+  with the week's events, new posts and polls to vote in.
+- Works with Hubra's new direct-message topics (bookings, waitlist,
+  requests, payments, membership, qualifications, weekly overview), direct
+  messages without the bell, and the "mute all direct messages" switch.
+
 ## 2.7.1
 
 - Release on a pushed v* tag (works with immutable releases) (#13)

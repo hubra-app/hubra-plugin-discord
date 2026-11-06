@@ -40,18 +40,60 @@ def _branded(body: dict) -> dict:
     return brand(body, current_tenant(), {"club_embeds": True})
 
 
-def deliver(conn, external_id: str, payload: dict) -> bool:
-    """The ``deliver_notification`` hook."""
+# A sign per topic, so a direct message says at a glance what it is about.
+TOPIC_ICONS = {
+    "bookings": "✅",
+    "waitlist": "🎟️",
+    "event_reminders": "⏰",
+    "poll_reminders": "🗳️",
+    "my_events": "📅",
+    "requests": "📨",
+    "payments": "💳",
+    "membership": "🔁",
+    "qualifications": "🎓",
+    "digest": "🗓️",
+}
+# Warnings stand out: overdue invoices, a qualification that ends.
+WARN_COLOR = 0xE8A33D
+MAX_FIELDS = 10
+
+
+def notification_embed(payload: dict) -> dict:
+    """The embed for one notification payload (``hubra.core.notifications.
+    channels``): title with the topic's sign, the text, the link, and the
+    ``fields`` a payload may carry (the weekly digest)."""
     from .messages import COLOR, club_url
 
-    if not apps.has_scope(conn, "notify"):
-        return False
     link = club_url(payload.get("link") or "/app/dashboard")
-    item = {"title": (payload.get("title") or "")[:256], "color": COLOR}
+    title = payload.get("title") or ""
+    icon = TOPIC_ICONS.get(payload.get("topic") or "")
+    if icon and not title.startswith(icon):
+        title = f"{icon} {title}"
+    item = {
+        "title": title[:256],
+        "color": WARN_COLOR if payload.get("kind") == "warning" else COLOR,
+    }
     if payload.get("msg"):
         item["description"] = payload["msg"][:2000]
     if link:
         item["url"] = link
+    fields = []
+    for field in (payload.get("fields") or [])[:MAX_FIELDS]:
+        if not isinstance(field, dict):
+            continue
+        name, value = str(field.get("name") or ""), str(field.get("value") or "")
+        if name and value:
+            fields.append({"name": name[:256], "value": value[:1024]})
+    if fields:
+        item["fields"] = fields
+    return item
+
+
+def deliver(conn, external_id: str, payload: dict) -> bool:
+    """The ``deliver_notification`` hook."""
+    if not apps.has_scope(conn, "notify"):
+        return False
+    item = notification_embed(payload)
     try:
         api.dm(
             external_id, _branded({"embeds": [item], "allowed_mentions": {"parse": []}})

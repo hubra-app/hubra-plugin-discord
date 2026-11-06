@@ -1217,6 +1217,93 @@ def test_notification_goes_out_as_a_direct_message(app, db, tenant, trainer, see
     assert embed["author"]["name"] == "Club A"  # the club, as DMs come from "Hubra"
 
 
+def _deliver_queued(fake, queued):
+    from hubra.core.tasks.connected_app_tasks import deliver_app_notification
+
+    for args in queued:
+        deliver_app_notification.run(*args)
+    return [m["embeds"][0] for m in fake.sent("/channels/dm-1/messages")]
+
+
+def test_direct_message_without_the_bell(app, db, tenant, trainer, seeded_db):
+    """A member can take a topic as a direct message only (bell off)."""
+    from hubra.api.notifications.services import notify_member
+    from hubra.core.models.notification import Notification
+    from hubra.core.tasks.connected_app_tasks import deliver_app_notification
+    from hubra.core.tenant.context import in_club
+
+    _conn(db, tenant, scopes=("notify",))
+    admin = seeded_db["admin"]
+    fake, queued = FakeDiscord(), []
+    with in_club(tenant):
+        admin.notify_prefs = {"payments": {"bell": False, "discord": True}}
+        db.session.commit()
+        with (
+            patch.object(api, "bot", side_effect=fake),
+            patch.object(
+                deliver_app_notification, "delay", side_effect=lambda *a: queued.append(a)
+            ),
+        ):
+            notify_member(
+                admin.id, "warning", "Invoice overdue", "CHF 40.00 · 01.11.2026",
+                topic="payments",
+            )
+            db.session.commit()
+            (embed,) = _deliver_queued(fake, queued)
+            assert db.session.query(Notification).filter_by(member_id=admin.id).count() == 0
+    assert embed["title"].startswith("💳 ")
+    assert embed["description"] == "CHF 40.00 · 01.11.2026"
+    from hubra_discord import notify
+
+    assert embed["color"] == notify.WARN_COLOR
+
+
+def test_digest_fields_in_the_direct_message(app, db, tenant, trainer, seeded_db):
+    from hubra.core.notifications.channels import send_without_bell
+    from hubra.core.tasks.connected_app_tasks import deliver_app_notification
+    from hubra.core.tenant.context import in_club
+
+    _conn(db, tenant, scopes=("notify",))
+    admin = seeded_db["admin"]
+    fake, queued = FakeDiscord(), []
+    with in_club(tenant):
+        admin.notify_prefs = {"digest": {"discord": True}}
+        db.session.commit()
+        with (
+            patch.object(api, "bot", side_effect=fake),
+            patch.object(
+                deliver_app_notification, "delay", side_effect=lambda *a: queued.append(a)
+            ),
+        ):
+            send_without_bell(
+                admin.id, "info", "Your week", "", link="/app/dashboard", topic="digest",
+                extra={"fields": [
+                    {"name": "Anlässe", "value": "• Training · Mo"},
+                    {"name": "", "value": "dropped"},
+                ]},
+            )
+            db.session.commit()
+            (embed,) = _deliver_queued(fake, queued)
+    assert embed["title"] == "🗓️ Deine Woche im Verein"
+    assert embed["fields"] == [{"name": "Anlässe", "value": "• Training · Mo"}]
+
+
+def test_muted_member_gets_no_direct_message(app, db, tenant, trainer, seeded_db):
+    from hubra.api.notifications.services import notify_member
+    from hubra.core.tenant.context import in_club
+
+    _conn(db, tenant, scopes=("notify",))
+    admin = seeded_db["admin"]
+    fake = FakeDiscord()
+    with in_club(tenant), patch.object(api, "bot", side_effect=fake):
+        admin.notify_prefs = {"posts": {"discord": True}}
+        admin.user.dm_prefs = {"muted": True}
+        db.session.commit()
+        notify_member(admin.id, "info", "New post", "x", topic="posts")
+        db.session.commit()
+    assert fake.calls == []
+
+
 def test_no_direct_message_unless_the_member_asked(app, db, tenant, trainer, seeded_db):
     from hubra.api.notifications.services import notify_member
     from hubra.core.tenant.context import in_club
