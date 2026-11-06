@@ -1181,7 +1181,7 @@ class FakeDiscord:
 
 
 def test_notification_goes_out_as_a_direct_message(app, db, tenant, trainer, seeded_db):
-    from hubra.api.notifications.services import notify_member
+    from hubra.core.notifications.services import notify_member
     from hubra.core.tenant.context import in_club
 
     from hubra.core.tasks.connected_app_tasks import deliver_app_notification
@@ -1227,7 +1227,7 @@ def _deliver_queued(fake, queued):
 
 def test_direct_message_without_the_bell(app, db, tenant, trainer, seeded_db):
     """A member can take a topic as a direct message only (bell off)."""
-    from hubra.api.notifications.services import notify_member
+    from hubra.core.notifications.services import notify_member
     from hubra.core.models.notification import Notification
     from hubra.core.tasks.connected_app_tasks import deliver_app_notification
     from hubra.core.tenant.context import in_club
@@ -1289,7 +1289,7 @@ def test_digest_fields_in_the_direct_message(app, db, tenant, trainer, seeded_db
 
 
 def test_muted_member_gets_no_direct_message(app, db, tenant, trainer, seeded_db):
-    from hubra.api.notifications.services import notify_member
+    from hubra.core.notifications.services import notify_member
     from hubra.core.tenant.context import in_club
 
     _conn(db, tenant, scopes=("notify",))
@@ -1305,7 +1305,7 @@ def test_muted_member_gets_no_direct_message(app, db, tenant, trainer, seeded_db
 
 
 def test_no_direct_message_unless_the_member_asked(app, db, tenant, trainer, seeded_db):
-    from hubra.api.notifications.services import notify_member
+    from hubra.core.notifications.services import notify_member
     from hubra.core.tenant.context import in_club
 
     _conn(db, tenant, scopes=("notify",))

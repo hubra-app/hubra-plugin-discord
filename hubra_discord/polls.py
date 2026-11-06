@@ -47,9 +47,16 @@ def buttons(poll) -> list[dict] | None:
     return rows
 
 
+def _name(member_id: int) -> str:
+    from hubra.core.models.member import Member
+
+    m = db.session.get(Member, member_id)
+    return m.name if m else f"#{member_id}"
+
+
 def handle(conn, member, custom_id: str) -> dict:
     """``vote:<poll>:<option index>[:<for member>]``."""
-    from hubra.api.polls.services import ProxyService, PollService
+    from hubra.core.contracts import SYSTEM, call, query
 
     from .commands import _link_hint, _may, reply
 
@@ -71,7 +78,15 @@ def handle(conn, member, custom_id: str) -> dict:
     if index >= len(options):
         return reply("Diese Antwort gibt es nicht mehr.")
     try:
-        PollService.vote(poll, member.id, index, on_behalf_of=for_member)
+        # The member's right to vote was checked above (_may).
+        call(
+            "polls.poll.vote",
+            poll_id=poll.id,
+            member_id=member.id,
+            option_index=index,
+            on_behalf_of=for_member,
+            actor=SYSTEM,
+        )
         db.session.commit()
     except ApiError as exc:
         db.session.rollback()
@@ -95,7 +110,9 @@ def handle(conn, member, custom_id: str) -> dict:
         return reply(f"✅ Für {name} abgestimmt: **{choice}**.")
 
     text = f"✅ Deine Stimme: **{choice}**. Du kannst sie bis zum Schluss ändern."
-    held = ProxyService.held(poll.id, member.id)[:5]
+    held = query(
+        "polls.proxies.held", poll_id=poll.id, member_id=member.id, actor=SYSTEM
+    )[:5]
     if not held:
         return reply(text)
     answer = reply(
@@ -108,10 +125,8 @@ def handle(conn, member, custom_id: str) -> dict:
                 {
                     "type": 2,
                     "style": 2,
-                    "label": _label(
-                        p.grantor.name if p.grantor else f"#{p.grantor_id}"
-                    ),
-                    "custom_id": f"vote:{poll.id}:{index}:{p.grantor_id}",
+                    "label": _label(_name(p["grantor_id"])),
+                    "custom_id": f"vote:{poll.id}:{index}:{p['grantor_id']}",
                 }
                 for p in held
             ],

@@ -17,19 +17,11 @@ MAX_MENTIONS = 50
 
 
 def missing_voters(poll) -> list[int]:
-    from hubra.api.polls.services import PollService
-    from hubra.core.models.poll import PollVote
+    """Who the poll is for and hasn't voted (a proxy's vote counts)."""
+    from hubra.core.contracts import SYSTEM, query
 
-    finder = getattr(PollService, "missing_voters", None)
-    if finder is not None:
-        return finder(poll)
-    required = PollService.get_required_members(poll)
-    voted = set(
-        db.session.scalars(
-            select(PollVote.member_id).where(PollVote.poll_id == poll.id)
-        )
-    )
-    return [m for m in required if m not in voted]
+    info = query("polls.poll.get", poll_id=poll.id, actor=SYSTEM)
+    return info["missing_member_ids"]
 
 
 def discord_ids(member_ids: list[int]) -> list[str]:

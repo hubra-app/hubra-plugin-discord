@@ -185,9 +185,13 @@ def _cancel_all(conn, key: str) -> int:
 
 
 def _closed(poll) -> bool:
-    from hubra.api.polls.services import is_closed
+    from hubra.core.contracts import SYSTEM, query
+    from hubra.core.errors import ApiError
 
-    return is_closed(poll)
+    try:
+        return query("polls.poll.get", poll_id=poll.id, actor=SYSTEM)["closed"]
+    except ApiError:  # gone already (a Refused NOT_FOUND)
+        return poll.status == "closed"
 
 
 def finish_poll(conn, poll_id: int) -> int:

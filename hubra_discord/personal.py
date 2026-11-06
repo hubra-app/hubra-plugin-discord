@@ -206,7 +206,7 @@ def trainings(conn, member) -> dict:
 
 def attend(conn, member, custom_id: str) -> dict:
     """``attend:<event>:present|excused|clear``."""
-    from hubra.api.events import attendance
+    from hubra.core.contracts import SYSTEM, call
     from hubra.core.models.event import ClubEvent
 
     from .commands import _link_hint, reply
@@ -236,7 +236,15 @@ def attend(conn, member, custom_id: str) -> dict:
         return reply("Das Training hat schon begonnen; sag es bitte deinem Trainer.")
     if wanted is None and now > closes:
         return reply("Das geht nur bis Ende des Trainingstages.")
-    attendance.set_status(event, member.id, wanted, actor_id=member.id)
+    # Members check themselves in; whether they may was checked above.
+    call(
+        "events.attendance.set",
+        event_id=event.id,
+        member_id=member.id,
+        status=wanted,
+        actor_id=member.id,
+        actor=SYSTEM,
+    )
     botlog.log(conn, "attendance", True, f"{member.name}: {parts[2]} · {event.title}")
     db.session.commit()
     text = {
