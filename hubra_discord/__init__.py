@@ -34,6 +34,10 @@ EVENT_CHANGED = "event.changed"
 # catch up on the next change or at tidy_messages.
 EVENT_SIGNUPS_CHANGED = "event.signups_changed"
 POLL_CLOSED = "poll.closed"
+# New Hubra and plugin versions with their changelog (Hubra with
+# services.changelogs); older versions never send them.
+HUBRA_RELEASED = "hubra.released"
+PLUGIN_RELEASED = "plugin.released"
 _EXTRA = (
     {"processes": {"discord-gateway": "hubra_discord.gateway:run"}}
     if "processes" in getattr(Module, "__dataclass_fields__", {})
@@ -113,6 +117,8 @@ module = Module(
         GROUP_MEMBERSHIP_CHANGED: f"{_HOOKS}:on_group_membership_changed",
         ACCOUNT_LINKED: f"{_HOOKS}:on_account_linked",
         ACCOUNT_UNLINKED: f"{_HOOKS}:on_account_unlinked",
+        HUBRA_RELEASED: f"{_HOOKS}:on_hubra_released",
+        PLUGIN_RELEASED: f"{_HOOKS}:on_plugin_released",
     },
     tasks=("hubra_discord.tasks",),
     # processes: the gateway, only for "someone joined the server" (welcome,

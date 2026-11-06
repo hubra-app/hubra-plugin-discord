@@ -405,6 +405,24 @@ def on_poll_closing(tenant_id=None, poll_id=None, **_):
     )
 
 
+# ── Changelogs ───────────────────────────────────────────────────────────────
+
+
+def on_hubra_released(tenant_id=None, event_id=None, **data):
+    """A new Hubra version: its changelog, if the club wants it (changelog.py).
+    *event_id* is the outbox delivery id."""
+    from . import changelog
+
+    changelog.queue(tenant_id, "hubra", data, event_id)
+
+
+def on_plugin_released(tenant_id=None, event_id=None, **data):
+    """A new version of a plugin the club has on: its changelog."""
+    from . import changelog
+
+    changelog.queue(tenant_id, "plugin", data, event_id)
+
+
 # ── Roles ────────────────────────────────────────────────────────────────────
 
 

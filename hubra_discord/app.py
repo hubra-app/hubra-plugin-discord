@@ -17,8 +17,9 @@ from .api import DiscordError
 _log = logging.getLogger(__name__)
 
 # What the bot posts, each to its own channel if the club picks one, else to
-# the main channel (channel_id).
-KINDS = ("events", "posts", "polls", "reminders", "public_events")
+# the main channel (channel_id). ``changelog``: new Hubra and plugin versions
+# (changelog.py), e.g. an announcements or a dedicated changelog channel.
+KINDS = ("events", "posts", "polls", "reminders", "public_events", "changelog")
 
 DEFAULT_CONFIG = {
     "channel_id": None,
@@ -51,9 +52,12 @@ DEFAULT_CONFIG = {
     "welcome_text": "",
     # /trainings: members check in and excuse themselves.
     "self_checkin": True,
-    # Hubra's own notices in the main channel (platform.py): new versions,
-    # and planned or running maintenance.
+    # New Hubra versions and new versions of the club's plugins, with their
+    # changelog, in the changelog channel (else the main channel); see
+    # changelog.py. Off by default: no club gets them without opting in.
     "hubra_news": False,
+    "plugin_news": False,
+    # Hubra's planned or running maintenance in the main channel (platform.py).
     "maintenance_notices": False,
     # A role for every open or visible group (``roles`` scope), made and
     # kept up by the bot (group_roles.py).
@@ -114,6 +118,8 @@ INTERNAL = (
     "guest_role",
     "kicked",
     "feedback",
+    # changelog.py: versions and delivery ids posted already.
+    "changelog_sent",
 )
 BOOLS = (
     "announce_events",
@@ -129,6 +135,7 @@ BOOLS = (
     "welcome_dm",
     "self_checkin",
     "hubra_news",
+    "plugin_news",
     "maintenance_notices",
     "group_roles",
     "nudge_voters",
