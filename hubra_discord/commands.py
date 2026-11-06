@@ -127,7 +127,7 @@ def club_member(discord_user_id: str):
 
 
 def _may(member, key: str) -> bool:
-    from hubra.api.permissions import member_has_permission, member_is_admin
+    from hubra.core.permissions import member_has_permission, member_is_admin
 
     return member_is_admin(member) or member_has_permission(member, key)
 
@@ -295,7 +295,7 @@ def _status(conn, member) -> dict:
 
 
 def _registration(conn, member, event_id: int, register: bool) -> dict:
-    from hubra.api.events.services import EventService
+    from hubra.core.contracts import SYSTEM, call
     from hubra.core.models.event import ClubEvent
 
     if member is None:
@@ -306,16 +306,21 @@ def _registration(conn, member, event_id: int, register: bool) -> dict:
     if event is None:
         return reply("Diesen Anlass gibt es nicht mehr.")
     try:
+        # The member's right was checked above (_may), as in the app.
+        reg = call(
+            "events.registration.set",
+            event_id=event_id,
+            member_id=member.id,
+            status="registered" if register else "cancelled",
+            own=True,
+            actor=SYSTEM,
+        )
         if register:
-            reg = EventService.register(
-                event_id=event_id, member_id=member.id, own=True
-            )
             text = {
                 "pending": f"Angemeldet für **{event.title}**; ein Organisator bestätigt deine Anmeldung.",
                 "waitlisted": f"**{event.title}** ist voll; du bist auf der Warteliste.",
-            }.get(reg.status, f"✅ Angemeldet für **{event.title}**.")
+            }.get(reg["status"], f"✅ Angemeldet für **{event.title}**.")
         else:
-            EventService.cancel_registration(event_id, member.id, own=True)
             text = f"Abgemeldet von **{event.title}**."
         db.session.commit()
     except ApiError as exc:
@@ -336,13 +341,13 @@ def _registration(conn, member, event_id: int, register: bool) -> dict:
 
 
 def _has_maybe() -> bool:
-    from hubra.api.events.services import EventService
+    from hubra.core.contracts import available
 
-    return hasattr(EventService, "maybe")  # Hubra with "Vielleicht"
+    return available("events.registration.set")
 
 
 def _maybe(conn, member, event_id: int) -> dict:
-    from hubra.api.events.services import EventService
+    from hubra.core.contracts import SYSTEM, call
     from hubra.core.models.event import ClubEvent
 
     if member is None:
@@ -353,7 +358,14 @@ def _maybe(conn, member, event_id: int) -> dict:
     if event is None or not _has_maybe():
         return reply("Diesen Anlass gibt es nicht mehr.")
     try:
-        EventService.maybe(event_id, member.id, own=True)
+        call(
+            "events.registration.set",
+            event_id=event_id,
+            member_id=member.id,
+            status="maybe",
+            own=True,
+            actor=SYSTEM,
+        )
         db.session.commit()
         text = f"🤔 Vielleicht für **{event.title}**. Es ist kein Platz für dich reserviert; «Anmelden» macht es fix."
     except ApiError as exc:

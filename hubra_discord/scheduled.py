@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import select
@@ -37,11 +38,36 @@ def _zone():
     return club_zone()
 
 
+# An event's time field, as Hubra reads it ("19:00" or "19:00-21:00").
+# Kept here: it is only reading the row, and a deleted event still has one.
+_TIME_RANGE = re.compile(r"^\s*(\d{1,2})[:.](\d{2})\s*(?:-\s*(\d{1,2})[:.](\d{2}))?")
+
+
+def _event_times(event):
+    """Local start and end datetimes, or (None, None) for all-day events."""
+    if event.all_day or not event.time:
+        return None, None
+    m = _TIME_RANGE.match(event.time)
+    if not m:
+        return None, None
+    try:
+        start = datetime.combine(event.date, time(int(m[1]), int(m[2])))
+        if m[3]:
+            end = datetime.combine(
+                event.end_date or event.date, time(int(m[3]), int(m[4]))
+            )
+        else:
+            end = start + timedelta(hours=1)
+    except ValueError:
+        return None, None
+    if end <= start:
+        end = start + timedelta(hours=1)
+    return start, end
+
+
 def times(event) -> tuple[datetime, datetime]:
     """Start and end in UTC. All-day events run from midnight to midnight
     (club time)."""
-    from hubra.api.events.services import _event_times
-
     zone = _zone()
     start, end = _event_times(event)
     if start is None:

@@ -138,4 +138,17 @@ module = Module(
             every=10 * 60,
         ),
     ),
+    # Hubra's features it uses, through contracts (docs/contracts.md in hubra).
+    consumes={
+        "events.registration.set": ">=1,<2",
+        "events.event.create": ">=1,<2",
+        "events.event.get": ">=1,<2",
+        "events.attendance.set": ">=1,<2",
+        "polls.poll.create": ">=1,<2",
+        "polls.poll.vote": ">=1,<2",
+        "polls.poll.get": ">=1,<2",
+        "polls.proxies.held": ">=1,<2",
+        "groups.self_join.list": ">=1,<2",
+        "groups.self_join.set": ">=1,<2",
+    },
 )

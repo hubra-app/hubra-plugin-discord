@@ -111,16 +111,13 @@ def _when(event) -> str:
 
 
 def _places(event) -> str:
-    from hubra.api.events.services import EventService
+    from hubra.core.contracts import SYSTEM, query
 
     try:
-        taken = EventService.places_taken(event.id)
-    except Exception:  # noqa: BLE001
-        taken = len(event.attendees or [])
-    try:
-        maybe = EventService.maybe_count(event.id)
-    except Exception:  # noqa: BLE001  Hubra before "Vielleicht"
-        maybe = 0
+        info = query("events.event.get", event_id=event.id, actor=SYSTEM)
+        taken, maybe = info["places_taken"], info["maybe"]
+    except Exception:  # noqa: BLE001  Events off, or a Hubra without it
+        taken, maybe = len(event.attendees or []), 0
     extra = f" · {maybe} vielleicht" if maybe else ""
     if event.max_attendees:
         free = max(event.max_attendees - taken, 0)
@@ -229,9 +226,10 @@ def poll_closing_embed(poll) -> dict[str, Any]:
         fields.append(("⏳ Schliesst", stamp(poll.closes_at, "R")))
     if poll.is_required:
         try:
-            from hubra.api.polls.services import PollService
+            from hubra.core.contracts import SYSTEM, query
 
-            required = len(PollService.get_required_members(poll))
+            info = query("polls.poll.get", poll_id=poll.id, actor=SYSTEM)
+            required = len(info["required_member_ids"])
             if required:
                 done = len({v.member_id for v in poll.votes or []})
                 fields.append(("🗳️ Abgestimmt", f"{min(done, required)} von {required}"))

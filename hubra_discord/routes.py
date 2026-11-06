@@ -164,8 +164,8 @@ def _manager():
     """The signed-in member, if they may manage connected apps; else None."""
     from flask_jwt_extended import verify_jwt_in_request
 
-    from hubra.api.auth.helpers import get_current_member
-    from hubra.api.permissions import member_has_permission, member_is_admin
+    from hubra.core.auth.helpers import get_current_member
+    from hubra.core.permissions import member_has_permission, member_is_admin
 
     try:
         verify_jwt_in_request()
@@ -209,7 +209,7 @@ def _server_call(connection_id: int, fn, status: int = 200):
     member, conn = found
     if request.method != "GET":
         # Support staff looking in as a member don't change the club's server.
-        from hubra.api.permissions import refuse_during_impersonation
+        from hubra.core.permissions import refuse_during_impersonation
 
         refuse_during_impersonation()
     try:
@@ -294,7 +294,7 @@ def server_stop_message(connection_id: int, key: str):
 
 def _audit_entry(member, conn, action: str, label: str) -> None:
     """Approvals and fixes of who sees a channel go to the club's audit log."""
-    from hubra.api.utils import log_audit
+    from hubra.core.utils import log_audit
 
     log_audit(member.id, action, "connected_app", conn.id, label[:255])
 

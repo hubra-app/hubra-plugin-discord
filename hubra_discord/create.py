@@ -272,10 +272,7 @@ def _failed(exc: ApiError) -> str:
 
 
 def new_event(conn, member, opts: dict) -> dict:
-    from hubra.api.events.services import EventsService
-    from marshmallow import ValidationError
-
-    from hubra.core.schemas.event import ClubEventCreateSchema
+    from hubra.core.contracts import SYSTEM, call
 
     from .commands import reply
     from .messages import club_url
@@ -303,47 +300,41 @@ def new_event(conn, member, opts: dict) -> dict:
         "type": "Social",
     }
     try:
-        data = ClubEventCreateSchema().load(body)
-        event = EventsService.create(data, member.id)
+        # Checked like the app's event form; the command checked the right.
+        event = call(
+            "events.event.create", body, actor_id=member.id, actor=SYSTEM
+        )
         db.session.commit()
-    except ValidationError as exc:
-        db.session.rollback()
-        return reply(f"Das ging nicht: {exc.messages}")
-    except ApiError as exc:
+    except ApiError as exc:  # a Refused too: VALIDATION_ERROR, ...
         db.session.rollback()
         return reply(_failed(exc))
-    botlog.log(conn, "command", True, f"/anlass by {member.name}: {event.title}")
+    botlog.log(conn, "command", True, f"/anlass by {member.name}: {event['title']}")
     db.session.commit()
-    link = club_url(f"/app/operations/events?event={event.id}")
-    text = f"✅ **{event.title}** am {event.date:%d.%m.%Y} ist erstellt."
+    link = club_url(f"/app/operations/events?event={event['id']}")
+    day = date.fromisoformat(event["date"])
+    text = f"✅ **{event['title']}** am {day:%d.%m.%Y} ist erstellt."
     if link:
         text += f"\nIn der App ergänzen (Plätze, Anmeldeschluss, Bild): {link}"
     return reply(text)
 
 
 def _poll(conn, member, body: dict, what: str) -> dict:
-    from hubra.api.polls.services import PollsService
-    from marshmallow import ValidationError
-
-    from hubra.core.schemas.poll import PollCreateSchema
+    from hubra.core.contracts import SYSTEM, call
 
     from .commands import reply
     from .messages import club_url
 
     try:
-        data = PollCreateSchema().load(body)
-        poll = PollsService.create(data, member.id)
+        # Checked like the app's poll form; the command checked the right.
+        poll = call("polls.poll.create", body, actor_id=member.id, actor=SYSTEM)
         db.session.commit()
-    except ValidationError as exc:
-        db.session.rollback()
-        return reply(f"Das ging nicht: {exc.messages}")
-    except ApiError as exc:
+    except ApiError as exc:  # a Refused too: VALIDATION_ERROR, ...
         db.session.rollback()
         return reply(_failed(exc))
-    botlog.log(conn, "command", True, f"/{what} by {member.name}: {poll.question}")
+    botlog.log(conn, "command", True, f"/{what} by {member.name}: {poll['question']}")
     db.session.commit()
-    link = club_url(f"/app/operations/polls?poll={poll.id}")
-    text = f"✅ **{poll.question}** ist gestartet."
+    link = club_url(f"/app/operations/polls?poll={poll['id']}")
+    text = f"✅ **{poll['question']}** ist gestartet."
     if link:
         text += f"\n{link}"
     return reply(text)
@@ -447,11 +438,11 @@ def _group_rows(entries: list[dict]) -> list[dict]:
 
 
 def groups(member, note: str = "") -> dict:
-    from hubra.api.groups.services import SelfJoinService
+    from hubra.core.contracts import SYSTEM, query
 
     from .commands import EPHEMERAL
 
-    entries = SelfJoinService.joinable(member.id)
+    entries = query("groups.self_join.list", member_id=member.id, actor=SYSTEM)
     if not entries:
         return {
             "type": 4,
@@ -465,7 +456,7 @@ def groups(member, note: str = "") -> dict:
     for g in entries[:25]:
         desc = f": {g['description'][:80]}" if g.get("description") else ""
         mark = "✓ " if g["joined"] else ""
-        lines.append(f"{mark}**{g['name']}** ({g['memberCount']}){desc}")
+        lines.append(f"{mark}**{g['name']}** ({g['member_count']}){desc}")
     return {
         "type": 4,
         "data": {
@@ -479,7 +470,7 @@ def groups(member, note: str = "") -> dict:
 
 def group_button(conn, member, custom_id: str) -> dict:
     """gjoin:<id> / gleave:<id>: answer by updating the same message."""
-    from hubra.api.groups.services import SelfJoinService
+    from hubra.core.contracts import SYSTEM, call
     from hubra.core.models.group import Group
 
     from .commands import _link_hint, reply
@@ -491,11 +482,17 @@ def group_button(conn, member, custom_id: str) -> dict:
         return reply("Diese Schaltfläche gilt nicht mehr.")
     group = db.session.get(Group, int(raw))
     try:
-        if action == "gjoin":
-            SelfJoinService.join(int(raw), member)
+        joined = action == "gjoin"
+        call(
+            "groups.self_join.set",
+            group_id=int(raw),
+            member_id=member.id,
+            joined=joined,
+            actor=SYSTEM,
+        )
+        if joined:
             note = f"✅ Du bist jetzt in **{group.name if group else raw}**."
         else:
-            SelfJoinService.leave(int(raw), member)
             note = f"Du bist aus **{group.name if group else raw}** ausgetreten."
         db.session.commit()
     except ApiError as exc:
