@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   plugin:
-    uses: hubra-app/hubra-plugins-template/.github/workflows/plugin.yml@153a0924c9860484791c557eef965a3f3a7afb68 # main
+    uses: hubra-app/hubra-plugins-template/.github/workflows/plugin.yml@01bf734763144f5070be7e07f17bf421474f4682 # main
     permissions:
       contents: write # only the release job uses it, on a tag
     secrets:
