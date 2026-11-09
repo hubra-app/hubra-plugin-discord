@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   plugin:
-    uses: hubra-app/hubra-plugins-template/.github/workflows/plugin.yml@6b865844e3de5283c18c3b9f7587a6dd50fb9a97 # main
+    uses: hubra-app/hubra-plugins-template/.github/workflows/plugin.yml@dff168c657881a156d9a2ef90abe8ec09d17afed # main
     secrets:
       HUBRA_READ_TOKEN: ${{ secrets.HUBRA_READ_TOKEN }}
 
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: plugin-signing
     steps:
-      - uses: hubra-app/hubra-plugins-template/.github/actions/sign@6b865844e3de5283c18c3b9f7587a6dd50fb9a97 # main
+      - uses: hubra-app/hubra-plugins-template/.github/actions/sign@dff168c657881a156d9a2ef90abe8ec09d17afed # main
         with:
           signing-key: ${{ secrets.HUBRA_SIGNING_KEY }}
           hubra-read-token: ${{ secrets.HUBRA_READ_TOKEN }}
@@ -45,7 +45,7 @@ jobs:
 
   release:
     needs: [plugin, sign]
-    uses: hubra-app/hubra-plugins-template/.github/workflows/publish.yml@6b865844e3de5283c18c3b9f7587a6dd50fb9a97 # main
+    uses: hubra-app/hubra-plugins-template/.github/workflows/publish.yml@dff168c657881a156d9a2ef90abe8ec09d17afed # main
     permissions:
       contents: write
     with:
