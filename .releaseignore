@@ -2,3 +2,4 @@
 tests/
 frontend/src/
 frontend/tsconfig.json
+.mason.toml
