@@ -1,0 +1,11 @@
+# Mason (the `mason` command and the web app) reads this file for bump, release
+# and New tag. Only the [release] table counts; checks live in the defaults.
+#
+#   mason bump <repo> minor     PR that sets plugin.yaml and adds a CHANGELOG section
+#   mason release tag <repo>    pushes v<version>; release.yml signs and publishes it
+#
+# Releases here are immutable and made by the workflow, so push only the tag.
+[release]
+version = "plugin.yaml"
+changelog = ["CHANGELOG.md"]
+tag = "v{version}"
