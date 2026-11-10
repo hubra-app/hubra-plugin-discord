@@ -248,6 +248,7 @@
       "feedbackNone": "None yet. They appear here after the next event.",
       "feedbackCount": "{{n}} answers",
       "changelog": "Changelog: new Hubra versions (e.g. an announcements or a dedicated changelog channel)",
+      "onsite": "Onsite today (Bookings: who is in which room today; names members, use a members-only channel)",
       "pluginNews": "Changelog: plugin updates",
       "pluginNewsHint": "New versions of the plugins your club uses, with their changelog. In the same channel as the Hubra versions."
     }
@@ -501,6 +502,7 @@
       "feedbackNone": "Noch keine. Sie erscheinen hier nach dem nächsten Anlass.",
       "feedbackCount": "{{n}} Antworten",
       "changelog": "Changelog: neue Hubra-Versionen (z. B. Ankündigungs- oder eigener Changelog-Kanal)",
+      "onsite": "Heute vor Ort (Buchungen: wer heute in welchem Raum ist; nennt Namen, nur in einem Kanal nur für Mitglieder)",
       "pluginNews": "Changelog: Plugin-Updates",
       "pluginNewsHint": "Neue Versionen der Plugins, die der Verein nutzt, mit ihrem Changelog. Im selben Kanal wie die Hubra-Versionen."
     }

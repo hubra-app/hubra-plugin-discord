@@ -118,6 +118,8 @@ module = Module(
         ACCOUNT_LINKED: f"{_HOOKS}:on_account_linked",
         ACCOUNT_UNLINKED: f"{_HOOKS}:on_account_unlinked",
         HUBRA_RELEASED: f"{_HOOKS}:on_hubra_released",
+        # Booking's Vor Ort list in the morning (when Booking is on).
+        "booking.onsite.today": f"{_HOOKS}:on_onsite_today",
         PLUGIN_RELEASED: f"{_HOOKS}:on_plugin_released",
     },
     tasks=("hubra_discord.tasks",),
@@ -156,5 +158,6 @@ module = Module(
         "polls.proxies.held": ">=1,<2",
         "groups.self_join.list": ">=1,<2",
         "groups.self_join.set": ">=1,<2",
+        "booking.onsite.today": ">=1,<2",
     },
 )

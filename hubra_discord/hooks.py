@@ -76,6 +76,7 @@ SWITCH_NAMES = {
     "announce_posts": "Neue Beiträge posten",
     "announce_polls": "Neue Umfragen posten",
     "announce_reminders": "Erinnerungen posten",
+    "onsite_today": "Heute vor Ort posten",
 }
 
 
@@ -406,6 +407,21 @@ def on_poll_closing(tenant_id=None, poll_id=None, **_):
 
 
 # ── Changelogs ───────────────────────────────────────────────────────────────
+
+
+def on_onsite_today(tenant_id=None, day=None, rooms=None, link=None, **_):
+    """Booking's Vor Ort: the day's list, if the club wants it (onsite.py)."""
+    from .onsite import today_embed
+
+    if not rooms:
+        return
+    _announce(
+        tenant_id,
+        "onsite",
+        "onsite_today",
+        lambda conn: today_embed(day, rooms, link),
+        "Heute vor Ort",
+    )
 
 
 def on_hubra_released(tenant_id=None, event_id=None, **data):

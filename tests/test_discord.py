@@ -1036,6 +1036,58 @@ def test_poll_closing_names_no_one(client, db, club_auth, tenant, queued):
     assert "Noch nicht abgestimmt" in item["description"]
 
 
+ONSITE_ROOMS = [
+    {
+        "resource_id": 1,
+        "name": "Werkstatt",
+        "location": "Keller",
+        "people": [
+            {
+                "member_id": 1,
+                "name": "Max",
+                "status": "going",
+                "starts": "18:00",
+                "key_holder": True,
+            },
+            {"member_id": 2, "name": "Lea", "status": "maybe", "comment": "Boot"},
+        ],
+    }
+]
+
+
+def test_onsite_list_is_posted_only_when_switched_on(db, tenant, queued):
+    conn = _conn(db, tenant, onsite_today=False)
+    _remind(
+        db,
+        tenant,
+        "on_onsite_today",
+        day="2026-11-12",
+        rooms=ONSITE_ROOMS,
+        link="https://x/app/booking/onsite",
+    )
+    queued.assert_not_called()
+
+    conn.config = {**conn.config, "onsite_today": True, "channels": {"onsite": "555"}}
+    db.session.commit()
+    _remind(
+        db,
+        tenant,
+        "on_onsite_today",
+        day="2026-11-12",
+        rooms=ONSITE_ROOMS,
+        link="https://x/app/booking/onsite",
+    )
+    connection_id, body, kind = queued.call_args.args[:3]
+    assert (connection_id, kind) == (conn.id, "onsite")
+    item = body["embeds"][0]
+    assert item["title"] == "📍 Heute vor Ort – Donnerstag, 12.11.2026"
+    room = item["fields"][0]
+    assert room["name"] == "🚪 Werkstatt (Keller)"
+    assert (
+        "✅ Max · ab 18:00 · 🔑" in room["value"] and "❔ Lea – Boot" in room["value"]
+    )
+
+
 # ── The club's look ──────────────────────────────────────────────────────────
 
 PNG = (

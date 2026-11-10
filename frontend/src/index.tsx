@@ -75,7 +75,7 @@ interface RoleMapping {
   role_id: string
 }
 
-type Kind = 'events' | 'posts' | 'polls' | 'reminders' | 'public_events' | 'changelog'
+type Kind = 'events' | 'posts' | 'polls' | 'reminders' | 'public_events' | 'changelog' | 'onsite'
 
 interface DiscordConfig {
   channel_id: string | null
@@ -116,6 +116,7 @@ interface DiscordConfig {
   guest_role_name: string
   kick_leavers: boolean
   event_feedback: boolean
+  onsite_today: boolean
 }
 
 const MAX_WELCOME = 1500
@@ -128,6 +129,7 @@ const KINDS: {
     | 'announce_polls'
     | 'announce_reminders'
     | 'hubra_news'
+    | 'onsite_today'
   labelKey: string
   label: string
 }[] = [
@@ -151,6 +153,12 @@ const KINDS: {
     toggle: 'hubra_news',
     labelKey: 'discord.changelog',
     label: 'Changelog: neue Hubra-Versionen (z. B. Ankündigungs- oder eigener Changelog-Kanal)',
+  },
+  {
+    kind: 'onsite',
+    toggle: 'onsite_today',
+    labelKey: 'discord.onsite',
+    label: 'Heute vor Ort (Buchungen: wer heute in welchem Raum ist; nennt Namen, nur in einem Kanal nur für Mitglieder)',
   },
 ]
 
@@ -195,6 +203,7 @@ function readConfig(c: Connection): DiscordConfig {
     guest_role_name: raw.guest_role_name ?? '',
     kick_leavers: raw.kick_leavers ?? false,
     event_feedback: raw.event_feedback ?? false,
+    onsite_today: raw.onsite_today ?? false,
   }
 }
 

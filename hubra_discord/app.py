@@ -17,9 +17,18 @@ from .api import DiscordError
 _log = logging.getLogger(__name__)
 
 # What the bot posts, each to its own channel if the club picks one, else to
-# the main channel (channel_id). ``changelog``: new Hubra and plugin versions
+# the main channel (channel_id). ``onsite``: Booking's "heute vor Ort" list
+# (onsite.py). ``changelog``: new Hubra and plugin versions
 # (changelog.py), e.g. an announcements or a dedicated changelog channel.
-KINDS = ("events", "posts", "polls", "reminders", "public_events", "changelog")
+KINDS = (
+    "events",
+    "posts",
+    "polls",
+    "reminders",
+    "public_events",
+    "changelog",
+    "onsite",
+)
 
 DEFAULT_CONFIG = {
     "channel_id": None,
@@ -97,6 +106,9 @@ DEFAULT_CONFIG = {
     # After an event: "Wie war es?" with 1-5 stars for those who came
     # (feedback.py).
     "event_feedback": False,
+    # Booking's Vor Ort: in the morning, who said they'll be in which room
+    # today (onsite.py). It names members, so off by default.
+    "onsite_today": False,
 }
 # Kept by the bot, not set by the club.
 INTERNAL = (
@@ -148,6 +160,7 @@ BOOLS = (
     "guest_queue",
     "kick_leavers",
     "event_feedback",
+    "onsite_today",
 )
 # Switches that need a scope the connection may not have.
 NEEDS_SCOPE = {

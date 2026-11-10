@@ -41,6 +41,7 @@ USE_LABELS = {
     "posts": "Beiträge",
     "polls": "Umfragen",
     "reminders": "Erinnerungen",
+    "onsite": "Vor Ort",
     "log": "Bot-Protokoll",
     "group": "Gruppenkanal",
 }

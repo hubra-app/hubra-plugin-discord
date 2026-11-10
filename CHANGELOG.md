@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Heute vor Ort.** With Booking's Vor Ort (Booking with
+  `booking.onsite.today`), the morning list of who is in which room today,
+  with times, comments and who brings the key. Settings › Verbundene Apps ›
+  Discord › Ankündigungen: "Heute vor Ort" with its own channel picker. Off
+  by default; it names members, so pick a channel only members see.
 - **Changelogs on the club's server.** New Hubra versions and updates of the
   plugins the club uses are posted with their changelog section, once per
   version. Settings › Verbundene Apps › Discord › Ankündigungen:
