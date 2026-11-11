@@ -51,8 +51,13 @@ def recipients(conn, source: str) -> list[tuple[int, str]]:
         return []
     out = []
     for member in db.session.scalars(
-        select(Member).where(Member.user_id.in_(list(linked)))
+        select(Member).where(
+            Member.user_id.in_(list(linked)), Member.archived_at.is_(None)
+        )
     ).all():
+        # Former and blocked members get no messages from the club.
+        if member.is_blocked:
+            continue
         if matches(source, member):
             out.append((member.id, linked[member.user_id]))
     return out

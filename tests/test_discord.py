@@ -3125,8 +3125,22 @@ def test_dm_to_a_group(client, db, club_auth, tenant, trainer, discord_settings)
         )
         assert resp.status_code == 202, resp.get_json()
     assert queued.call_args.args[1] == ["42"]
-    # The task sends and counts closed DMs.
+    # Former members get nothing from the club any more.
+    from datetime import datetime as dt
+    from datetime import timezone as tz
+
     from hubra.core.tenant.context import in_club
+
+    from hubra_discord.dm import recipients
+
+    member = trainer.members[0]
+    member.archived_at = dt.now(tz.utc)
+    with in_club(tenant):
+        assert recipients(conn, source) == []
+    member.archived_at = None
+    with in_club(tenant):
+        assert recipients(conn, source) == [(member.id, "42")]
+    # The task sends and counts closed DMs.
 
     from hubra_discord.dm import send_all
 
@@ -3508,7 +3522,9 @@ def test_report_a_message(client, db, tenant):
             ],
         },
     }
+    on_server = {"id": "555", "guild_id": GUILD}
     with (
+        patch.object(api, "channel", return_value=on_server),
         patch.object(
             api,
             "message",
@@ -3536,11 +3552,59 @@ def test_report_a_message(client, db, tenant):
         "Nachrichten verwalten" in _signed(client, click).get_json()["data"]["content"]
     )
     click["member"]["permissions"] = str(api.MANAGE_MESSAGES)
-    with patch.object(api, "delete_message", return_value=True) as delete:
+    with (
+        patch.object(api, "channel", return_value=on_server),
+        patch.object(api, "delete_message", return_value=True) as delete,
+    ):
         done = _signed(client, click).get_json()
     delete.assert_called_once()
     assert done["type"] == 7 and done["data"]["components"] == []
     assert "Gelöscht von anna" in done["data"]["embeds"][0]["fields"][-1]["value"]
+
+
+def test_reports_stay_on_the_clubs_own_server(client, db, tenant):
+    """The bot's token works on every server; a forged form or button with
+    another server's channel must not read or delete anything there."""
+    _conn(db, tenant, scopes=("commands", "moderate"), mod_channel_id="919")
+    elsewhere = {"id": "777", "guild_id": "999999"}
+    filled = {
+        "type": 5,
+        "guild_id": GUILD,
+        "member": {"user": {"id": "77", "username": "anna"}},
+        "data": {
+            "custom_id": "mrep:777:6001",
+            "components": [
+                {"type": 1, "components": [{"custom_id": "reason", "value": "Spam"}]}
+            ],
+        },
+    }
+    with (
+        patch.object(api, "channel", return_value=elsewhere),
+        patch.object(api, "message") as read,
+        patch.object(api, "send") as send,
+    ):
+        answer = _signed(client, filled).get_json()
+    assert "nicht durch" in answer["data"]["content"]
+    read.assert_not_called()
+    send.assert_not_called()
+
+    click = {
+        "type": 3,
+        "guild_id": GUILD,
+        "member": {
+            "user": {"id": "77", "username": "anna"},
+            "permissions": str(api.MANAGE_MESSAGES),
+        },
+        "data": {"custom_id": "mdel:777:6001"},
+        "message": {"embeds": [{}]},
+    }
+    with (
+        patch.object(api, "channel", return_value=elsewhere),
+        patch.object(api, "delete_message") as delete,
+    ):
+        answer = _signed(client, click).get_json()
+    assert "nicht auf eurem Server" in answer["data"]["content"]
+    delete.assert_not_called()
 
 
 def test_reports_need_the_moderate_scope(client, db, tenant):
@@ -3676,3 +3740,10 @@ def test_feedback_after_an_event(client, db, club_auth, tenant, trainer):
     assert (first["count"], first["average"]) == (1, 5.0)
     assert first["comments"] == ["Super Stimmung"]
     assert "42" not in json.dumps(shown)  # anonymous
+    # Not even in the connection's config, which the club's admins see.
+    db.session.refresh(conn)
+    stored = conn.config["feedback"][str(event.id)]
+    assert "42" not in stored["votes"] and list(stored["votes"].values()) == [5]
+    # Only 1 to 5.
+    for bad in ("12", "", "0"):
+        assert "gilt nicht mehr" in click(f"fb:{event.id}:{bad}")["data"]["content"]

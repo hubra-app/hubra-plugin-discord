@@ -372,8 +372,12 @@ def new_resolution(conn, member, opts: dict) -> dict:
     raw = str(opts.get("funktion") or "")
     function = db.session.get(Function, int(raw)) if raw.isdigit() else None
     if function is None:
+        # The exact name (any case); not ilike, where % or _ in what someone
+        # typed would match some other function.
         function = db.session.scalar(
-            select(Function).where(Function.name.ilike(raw.strip()))
+            select(Function)
+            .where(db.func.lower(Function.name) == raw.strip().lower())
+            .limit(1)
         )
     if function is None:
         return reply(

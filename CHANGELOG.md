@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Security audit fixes.** Reports ("Melden") and their "Nachricht löschen"
+  button only read or delete messages in channels on the club's own server
+  (the bot's token works on every server it is on, so a forged form or
+  button could reach another club's channel). "Wie war …?" ratings no
+  longer store the Discord user id in the connection's settings, which the
+  club's admins can see; each vote is kept under a keyed hash instead, so
+  the answers stay anonymous as promised (ratings given before keep their
+  old key until that event drops out). A rating outside 1 to 5 is refused.
+  Direct messages from Settings › Discord › Mitglieder no longer go to
+  archived or blocked members. `/beschluss` matches the function's exact
+  name (a `%` no longer picks some other function). Needs Hubra 0.2.1 or
+  newer (contracts); 0.2.0 could not load the plugin.
 - **Direct messages in the club's look.** The welcome message to someone new
   on the server now comes as an embed with the club's name, logo and colour,
   like every other direct message (before: plain text without the club).
