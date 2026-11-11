@@ -59,6 +59,20 @@ def _who(interaction: dict) -> str:
     return user.get("global_name") or user.get("username") or "?"
 
 
+def _on_server(conn, channel_id: str) -> bool:
+    """Whether *channel_id* is a channel on this connection's server.
+
+    The bot's token works on every server the bot is on, so a channel id
+    that comes back in a button or form (``mrep:``, ``mdel:``) is checked
+    before the bot reads or deletes anything there: a forged id must not
+    reach another club's server."""
+    try:
+        found = api.channel(channel_id)
+    except DiscordError:
+        return False
+    return found is not None and str(found.get("guild_id")) == str(conn.external_id)
+
+
 def _ephemeral(text: str) -> dict:
     from .commands import reply
 
@@ -130,6 +144,8 @@ def report_sent(conn, interaction: dict) -> dict:
     if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
         return _ephemeral("Diese Meldung ging nicht durch.")
     _, channel_id, message_id = parts
+    if not _on_server(conn, channel_id):
+        return _ephemeral("Diese Meldung ging nicht durch.")
     reason = " ".join(_field(interaction, "reason").split())[:MAX_REASON]
     guild = str(conn.external_id)
     link = f"https://discord.com/channels/{guild}/{channel_id}/{message_id}"
@@ -220,6 +236,8 @@ def report_button(conn, interaction: dict, custom_id: str) -> dict:
     parts = custom_id.split(":")
     if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
         return _ephemeral("Diese Schaltfläche gilt nicht mehr.")
+    if not _on_server(conn, parts[1]):
+        return _ephemeral("Diese Nachricht ist nicht auf eurem Server.")
     try:
         gone = api.delete_message(
             parts[1], parts[2], f"Hubra: gemeldet, gelöscht von {who}"

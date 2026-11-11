@@ -8,12 +8,17 @@ words. Answers are anonymous: the club sees the average, the count and the
 comments in Settings › Discord, not who gave them.
 
 Trainings are left out (they come every week). Kept as ``feedback``:
-{event id: {title, date, votes: {Discord user id: 1-5}, comments: [...]}},
-the newest ``MAX_EVENTS`` only.
+{event id: {title, date, votes: {voter key: 1-5}, comments: [...]}},
+the newest ``MAX_EVENTS`` only. The voter key is a keyed hash of the
+Discord user id (``voter_key``), never the id itself: the connection's
+config is shown to the club's admins, and a raw id would tell them who gave
+which rating.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
@@ -27,6 +32,20 @@ MAX_EVENTS = 30
 MAX_COMMENTS = 50
 MAX_COMMENT = 500
 MAX_PER_RUN = 3
+
+
+RATINGS = ("1", "2", "3", "4", "5")
+
+
+def voter_key(event_id: str, discord_user_id: str) -> str:
+    """One rating per person and event, without storing who: an HMAC of the
+    Discord user id with the app's secret key, per event (so keys can't be
+    matched across events either)."""
+    from flask import current_app
+
+    secret = str(current_app.config.get("SECRET_KEY") or "").encode()
+    message = f"discord-feedback:{event_id}:{discord_user_id}".encode()
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()[:32]
 
 
 def _store(conn) -> dict:
@@ -204,7 +223,7 @@ def vote(conn, member, discord_user_id: str, custom_id: str) -> dict:
     from .commands import reply
 
     parts = custom_id.split(":")
-    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in "12345":
+    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in RATINGS:
         return reply("Diese Schaltfläche gilt nicht mehr.")
     entry, error = _check(conn, member, parts[1])
     if error:
@@ -212,7 +231,8 @@ def vote(conn, member, discord_user_id: str, custom_id: str) -> dict:
     store = _store(conn)
     entry = dict(entry)
     votes = dict(entry.get("votes") or {})
-    votes[str(discord_user_id)] = int(parts[2])
+    votes.pop(str(discord_user_id), None)  # stored by id before 2.8.1
+    votes[voter_key(parts[1], str(discord_user_id))] = int(parts[2])
     entry["votes"] = votes
     store[parts[1]] = entry
     _save(conn, store)
