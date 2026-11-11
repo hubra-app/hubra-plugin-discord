@@ -1120,6 +1120,30 @@ def test_announcements_carry_the_club_look(app, db, tenant):
     )
 
 
+def test_notification_dm_carries_the_club_look_but_warnings_stay_orange(
+    app, db, tenant
+):
+    from hubra.core.tenant.context import in_club
+
+    from hubra_discord.notify import WARN_COLOR, deliver
+
+    app.config["API_PUBLIC_URL"] = "https://api.example.org"
+    _brand(db, tenant, club_name="FC Example", primary_color="#12ab34", logo=PNG)
+    conn = _conn(db, tenant, scopes=("notify",))
+    try:
+        with in_club(tenant), patch.object(api, "dm") as dm:
+            deliver(conn, "555", {"title": "Neu", "msg": "x", "kind": "info"})
+            deliver(conn, "555", {"title": "Überfällig", "msg": "y", "kind": "warning"})
+    finally:
+        app.config["API_PUBLIC_URL"] = ""
+    info, warning = (c.args[1]["embeds"][0] for c in dm.call_args_list)
+    assert info["color"] == 0x12AB34
+    assert warning["color"] == WARN_COLOR
+    for embed in (info, warning):
+        assert embed["author"]["name"] == "FC Example"
+        assert embed["author"]["icon_url"].startswith("https://api.example.org/")
+
+
 def test_profile_sets_nick_avatar_and_bio_once(app, db, tenant):
     from hubra_discord.tasks import apply_profile
 
@@ -1818,7 +1842,9 @@ def test_newcomer_gets_the_welcome(app, db, tenant):
     (dm,) = fake.sent("/users/@me/channels")
     assert dm == {"recipient_id": "555"}
     (msg,) = fake.sent("/channels/dm-1/messages")
-    assert msg["content"] == "Hallo bei Club A!"
+    (embed,) = msg["embeds"]
+    assert embed["description"] == "Hallo bei Club A!"
+    assert embed["author"]["name"] == "Club A"  # the club's look, like every DM
     db.session.refresh(conn)
 
 

@@ -20,6 +20,7 @@ from hubra.core import apps
 
 from . import api, botlog
 from .api import DiscordError
+from .messages import COLOR
 
 # Discord's code for "Cannot send messages to this user".
 CANNOT_DM = 50007
@@ -94,10 +95,12 @@ def deliver(conn, external_id: str, payload: dict) -> bool:
     if not apps.has_scope(conn, "notify"):
         return False
     item = notification_embed(payload)
+    body = _branded({"embeds": [item], "allowed_mentions": {"parse": []}})
+    if payload.get("kind") == "warning":
+        # The club's name and logo, but a warning keeps its orange.
+        body["embeds"][0]["color"] = WARN_COLOR
     try:
-        api.dm(
-            external_id, _branded({"embeds": [item], "allowed_mentions": {"parse": []}})
-        )
+        api.dm(external_id, body)
     except DiscordError as exc:
         if exc.status == 403:
             # Their privacy settings: not the club's problem, but say so.
@@ -147,10 +150,14 @@ def member_joined(conn, user_id: str) -> str:
         queued = ""
     if not apps.has_scope(conn, "notify") or not (conn.config or {}).get("welcome_dm"):
         return queued
-    body = {
-        "content": welcome_text(conn),
-        "allowed_mentions": {"parse": []},
-    }
+    # An embed, so the welcome carries the club's name, logo and colour like
+    # every other direct message (the sender itself is always the bot).
+    body = _branded(
+        {
+            "embeds": [{"description": welcome_text(conn), "color": COLOR}],
+            "allowed_mentions": {"parse": []},
+        }
+    )
     try:
         api.dm(user_id, body)
     except DiscordError as exc:

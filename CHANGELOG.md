@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Direct messages in the club's look.** The welcome message to someone new
+  on the server now comes as an embed with the club's name, logo and colour,
+  like every other direct message (before: plain text without the club).
+  Warnings in notification DMs (an overdue invoice, an ending
+  qualification) stay orange again instead of taking the club colour.
 - **Heute vor Ort.** With Booking's Vor Ort (Booking with
   `booking.onsite.today`), the morning list of who is in which room today,
   with times, comments and who brings the key. Settings › Verbundene Apps ›
