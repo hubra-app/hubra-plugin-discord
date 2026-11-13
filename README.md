@@ -10,7 +10,7 @@ want them, a welcome message for new people on the server, and (opt-in) the chan
 in a channel the club picks, and Hubra's maintenance notices.
 On the platform's own server it hands clicks and commands to Hubra's platform bot (club requests, alerts, `/plattform`, `/wartung`).
 
-**Version** 2.7.1 · **Works with** Hubra >=0.2,<1 (with connected apps) · **Plugin id** `discord`
+**Version** 2.9.0 · **Works with** Hubra >=0.2.1,<1 · **Plugin id** `discord`
 
 ## Install
 
