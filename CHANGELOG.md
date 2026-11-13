@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.9.0
 
 - **Security audit fixes.** Reports ("Melden") and their "Nachricht löschen"
   button only read or delete messages in channels on the club's own server
