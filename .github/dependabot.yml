@@ -1,0 +1,8 @@
+# Written by mason (its built-in defaults): keeps the Actions in the workflows up to date.
+# Add the ecosystems this repo uses (pip, npm, ...) or replace it with your own.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
